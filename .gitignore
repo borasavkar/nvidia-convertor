@@ -1,0 +1,20 @@
+# Sanal ortam
+.venv/
+venv/
+
+# PyInstaller ciktilari
+build/
+dist/
+*.spec.bak
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Isletim sistemi
+Thumbs.db
+desktop.ini
+
+# Test/gecici medya
+*.tmp
