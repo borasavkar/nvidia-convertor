@@ -8,7 +8,16 @@ import sys
 import winsound
 import time
 import shutil
+import json
+import tempfile
 from collections import deque
+
+# Ayarlar kullanicinin profilinde tutulur; program klasoru salt-okunur olabilir
+# (Program Files) ve tasinabilir kurulumda da bu yol calisir.
+SETTINGS_PATH = os.path.join(
+    os.environ.get("APPDATA") or os.path.expanduser("~"),
+    "NvidiaConvertor", "settings.json"
+)
 
 try:
     import psutil
@@ -100,6 +109,124 @@ def get_cq_default(codec, scale):
     return codec_defaults.get(scale, codec_defaults["default"])
 
 
+def parse_time(metin):
+    """
+    'ss', 'dd:ss' veya 'ss:dd:ss(.ms)' girdisini saniyeye cevirir.
+    Bos/gecersiz girdi None dondurur (kirpma uygulanmaz).
+    """
+    metin = (metin or "").strip()
+    if not metin:
+        return None
+    try:
+        parcalar = [float(p) for p in metin.split(":")]
+    except ValueError:
+        return None
+    if not 1 <= len(parcalar) <= 3 or any(p < 0 for p in parcalar):
+        return None
+    saniye = 0.0
+    for p in parcalar:
+        saniye = saniye * 60 + p
+    return saniye
+
+
+def trim_args(cfg):
+    """
+    Kirpma bayraklarini uretir. -ss GIRDIDEN ONCE gelir (hizli arama) ve
+    -to bu durumda girdinin basina gore degil, -ss sonrasina goredir; bu
+    yuzden sure farki -t olarak verilir.
+    """
+    bas = parse_time(cfg.get("trim_start"))
+    son = parse_time(cfg.get("trim_end"))
+    args = []
+    if bas:
+        args += ["-ss", f"{bas:.3f}"]
+    if son and (not bas or son > bas):
+        args += ["-t", f"{son - (bas or 0):.3f}"]
+    return args
+
+
+def build_filters(cfg, probes):
+    """
+    Video filtre zincirini kurar. SAF FONKSIYON.
+    Hem gercek kodlama hem de onizleme karesi ayni zinciri kullanir; boylece
+    onizlemede gordugun goruntu ciktida elde edecegin goruntudur.
+    """
+    notes = []
+    cuda_frames = probes.get("cuda_frames", False)
+    vf_filters = []
+
+    if cfg["use_bwdif"]:
+        vf_filters.append("yadif_cuda" if cuda_frames else "bwdif")
+
+    if cfg["scale"] != "Orijinal":
+        w = SCALE_MAP.get(cfg["scale"])
+        if w is None:
+            notes.append(f"⚠️ Bilinmeyen çözünürlük: {cfg['scale']}, Orijinal kullanılıyor.")
+        elif cuda_frames:
+            sc = f"scale_cuda=w='if(gt(a,1),{w},-2)':h='if(gt(a,1),-2,{w})'"
+            if cfg["interp_algo"] != "Otomatik":
+                sc += f":interp_algo={cfg['interp_algo']}"
+            vf_filters.append(sc)
+        else:
+            vf_filters.append(f"scale='if(gt(a,1),{w},-2)':'if(gt(a,1),-2,{w})':flags=lanczos")
+
+    # 8-bit istendiginde CUDA karelerini GPU'da nv12'ye dusurmek gerekir:
+    # -profile:v main tek basina yok sayilir, cikti yine Main 10 olur.
+    if cuda_frames and not cfg["ten_bit"] and not cfg["is_vp9"]:
+        vf_filters.append("scale_cuda=format=nv12")
+
+    color_filter = ""
+    if cfg["color_preset"] == "Karanlık Video Kurtarma":
+        color_filter = "eq=brightness=0.05:contrast=1.15:saturation=1.1:gamma=1.5"
+    elif cfg["color_preset"] == "Özel Ayarlar":
+        b, c, s, g = cfg["brightness"], cfg["contrast"], cfg["saturation"], cfg["gamma"]
+        if b != 0.0 or c != 1.0 or s != 1.0 or g != 1.0:
+            color_filter = f"eq=brightness={b:.2f}:contrast={c:.2f}:saturation={s:.2f}:gamma={g:.2f}"
+
+    if color_filter:
+        if cuda_frames:
+            # Indirme formati kaynagin bit derinligine gore secilmeli:
+            # sabit "nv12" 10/12-bit kaynaklarda ffmpeg'i durduruyordu.
+            dl_fmt = cuda_download_format(probes.get("pix_fmt", ""))
+            notes.append("⚠️ UYARI: Saf CUDA sekmesinde CPU tabanlı renk filtresi aktif. "
+                         f"Veri VRAM->RAM->VRAM kopyalanacak (format: {dl_fmt}). Bu işlem hızı düşürebilir.")
+            vf_filters.extend(["hwdownload", f"format={dl_fmt}", color_filter, "hwupload_cuda"])
+        else:
+            vf_filters.append(color_filter)
+
+    if not cfg["is_pure_cuda"] and cfg["sub_file"]:
+        vf_filters.append(f"subtitles={escape_filter_path(cfg['sub_file'])}")
+
+    return vf_filters, notes
+
+
+def build_preview_command(cfg, probes, cikti_png, zaman=None):
+    """
+    Tek karelik onizleme komutu. Kodlama komutuyla AYNI filtre zincirini
+    kullanir (build_filters), boylece onizleme ciktiyi temsil eder.
+    """
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-hwaccel", "cuda"]
+    if probes.get("cuda_frames"):
+        cmd.extend(["-hwaccel_output_format", "cuda"])
+    bas = parse_time(cfg.get("trim_start")) or 0.0
+    cmd.extend(["-ss", f"{(zaman if zaman is not None else bas):.3f}", "-i", cfg["input_file"]])
+
+    vf, _ = build_filters(cfg, probes)
+    if probes.get("cuda_frames"):
+        # PNG kodlayicisi sistem bellegi ister.
+        if vf and vf[-1] == "hwupload_cuda":
+            # Renk filtresi zinciri kareyi zaten RAM'e indirmisti; sirf VRAM'e
+            # geri yukleyip tekrar indirmek gereksiz ve hatali (yukleme sonrasi
+            # kare formati degistigi icin ikinci hwdownload cakiliyor).
+            vf = vf[:-1]
+        else:
+            vf = vf + ["hwdownload", f"format={cuda_download_format(probes.get('pix_fmt', ''))}"]
+    if vf:
+        cmd.extend(["-vf", ",".join(vf)])
+    cmd.extend(["-frames:v", "1", "-y", cikti_png])
+    return cmd
+
+
 def build_command(cfg, probes):
     """
     FFmpeg komutunu kurar. SAF FONKSIYON: Tk yok, disk yok, alt surec yok.
@@ -138,52 +265,11 @@ def build_command(cfg, probes):
     cmd = ["ffmpeg", "-hwaccel", "cuda"]
     if cuda_frames:
         cmd.extend(["-hwaccel_output_format", "cuda"])
+    cmd.extend(trim_args(cfg))
     cmd.extend(["-i", cfg["input_file"]])
 
-    # ---------- FILTRELER ----------
-    vf_filters = []
-    if cfg["use_bwdif"]:
-        vf_filters.append("yadif_cuda" if cuda_frames else "bwdif")
-
-    if cfg["scale"] != "Orijinal":
-        w = SCALE_MAP.get(cfg["scale"])
-        if w is None:
-            notes.append(f"⚠️ Bilinmeyen çözünürlük: {cfg['scale']}, Orijinal kullanılıyor.")
-        elif cuda_frames:
-            sc = f"scale_cuda=w='if(gt(a,1),{w},-2)':h='if(gt(a,1),-2,{w})'"
-            if cfg["interp_algo"] != "Otomatik":
-                sc += f":interp_algo={cfg['interp_algo']}"
-            vf_filters.append(sc)
-        else:
-            vf_filters.append(f"scale='if(gt(a,1),{w},-2)':'if(gt(a,1),-2,{w})':flags=lanczos")
-
-    # 8-bit istendiginde CUDA karelerini GPU'da nv12'ye dusurmek gerekir:
-    # -profile:v main tek basina yok sayilir, cikti yine Main 10 olur.
-    if cuda_frames and not ten_bit and not is_vp9:
-        vf_filters.append("scale_cuda=format=nv12")
-
-    color_filter = ""
-    if cfg["color_preset"] == "Karanlık Video Kurtarma":
-        color_filter = "eq=brightness=0.05:contrast=1.15:saturation=1.1:gamma=1.5"
-    elif cfg["color_preset"] == "Özel Ayarlar":
-        b, c, s, g = cfg["brightness"], cfg["contrast"], cfg["saturation"], cfg["gamma"]
-        if b != 0.0 or c != 1.0 or s != 1.0 or g != 1.0:
-            color_filter = f"eq=brightness={b:.2f}:contrast={c:.2f}:saturation={s:.2f}:gamma={g:.2f}"
-
-    if color_filter:
-        if cuda_frames:
-            # Indirme formati kaynagin bit derinligine gore secilmeli:
-            # sabit "nv12" 10/12-bit kaynaklarda ffmpeg'i durduruyordu.
-            dl_fmt = cuda_download_format(probes.get("pix_fmt", ""))
-            notes.append("⚠️ UYARI: Saf CUDA sekmesinde CPU tabanlı renk filtresi aktif. "
-                         f"Veri VRAM->RAM->VRAM kopyalanacak (format: {dl_fmt}). Bu işlem hızı düşürebilir.")
-            vf_filters.extend(["hwdownload", f"format={dl_fmt}", color_filter, "hwupload_cuda"])
-        else:
-            vf_filters.append(color_filter)
-
-    if not is_pure_cuda and sub_file:
-        vf_filters.append(f"subtitles={escape_filter_path(sub_file)}")
-
+    vf_filters, filtre_notlari = build_filters(cfg, probes)
+    notes.extend(filtre_notlari)
     if vf_filters:
         cmd.extend(["-vf", ",".join(vf_filters)])
 
@@ -330,8 +416,11 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     def __init__(self):
         super().__init__()
         self.title("Nvidia Cuda Video Convertor - Ultimate Edition")
-        self.geometry("850x1120")
-        self.resizable(False, False)
+        self.geometry("880x1180")
+        # Sabit boyut, kucuk ekranlarda pencerenin altini kesiyordu. Log alani
+        # expand=True oldugu icin kucultmeyi o sogurur.
+        self.resizable(True, True)
+        self.minsize(860, 680)
 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.current_process = None
@@ -341,6 +430,16 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.current_output_file = None
         self._encode_start_time = None
         self._ffmpeg_tail = deque(maxlen=50)
+
+        # --- KUYRUK VE KALICI AYARLAR ---
+        self.job_queue = []          # collect_config() anlik goruntuleri
+        self.cq_refreshers = {}      # sekme adi -> CQ etiketini tazeleyen callback
+        self.last_video_dir = ""
+        self.last_sub_dir = ""
+        self.output_dir = ctk.StringVar(value="")
+        self.name_with_cq = ctk.BooleanVar(value=True)
+        self.trim_start = ctk.StringVar(value="")
+        self.trim_end = ctk.StringVar(value="")
 
         # --- GÖRÜNTÜ VE RENK DEĞİŞKENLERİ ---
         self.color_preset = ctk.StringVar(value="Varsayılan (Devre Dışı)")
@@ -390,6 +489,16 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.btn_sub = ctk.CTkButton(inner_files, text="Gözat", width=100, command=self.select_sub)
         self.btn_sub.grid(row=1, column=2, padx=10, pady=(0, 15))
 
+        # --- CIKIS KLASORU ---
+        ctk.CTkLabel(inner_files, text="Çıkış Klasörü:").grid(row=2, column=0, padx=15, pady=(0, 15), sticky="w")
+        ctk.CTkEntry(inner_files, textvariable=self.output_dir, width=450,
+                     placeholder_text="Boş bırakılırsa kaynak videonun yanına yazılır").grid(row=2, column=1, padx=10, pady=(0, 15))
+        frame_out = ctk.CTkFrame(inner_files, fg_color="transparent")
+        frame_out.grid(row=2, column=2, padx=10, pady=(0, 15), sticky="w")
+        ctk.CTkButton(frame_out, text="Gözat", width=100, command=self.select_output_dir).pack(side="left")
+        ctk.CTkCheckBox(inner_files, text="Dosya adına CQ ekle",
+                        variable=self.name_with_cq).grid(row=3, column=1, padx=10, pady=(0, 10), sticky="w")
+
         # (Sürükle-bırak kurulumu log kutusu oluştuktan sonra yapılır - __init__ sonu)
 
         # 1.5. GÖRÜNTÜ VE RENK AYARLARI ALANI
@@ -408,6 +517,18 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             width=250
         )
         self.cb_preset.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+
+        # --- KIRPMA + ONIZLEME (yeni kart acmamak icin ayni satira) ---
+        frame_trim = ctk.CTkFrame(inner_color, fg_color="transparent")
+        frame_trim.grid(row=0, column=2, padx=(15, 5), pady=5, sticky="w")
+        ctk.CTkLabel(frame_trim, text="Kırpma  Baş:").pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(frame_trim, textvariable=self.trim_start, width=70,
+                     placeholder_text="00:00").pack(side="left")
+        ctk.CTkLabel(frame_trim, text="Bitiş:").pack(side="left", padx=(8, 4))
+        ctk.CTkEntry(frame_trim, textvariable=self.trim_end, width=70,
+                     placeholder_text="sonuna").pack(side="left")
+        ctk.CTkButton(frame_trim, text="🖼️ Önizleme", width=110,
+                      command=self.show_preview_frame).pack(side="left", padx=(12, 0))
 
         self.frame_sliders = ctk.CTkFrame(inner_color, fg_color="transparent")
         self.frame_sliders.grid(row=1, column=0, columnspan=3, sticky="we", padx=10, pady=5)
@@ -455,6 +576,27 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         self.tabview.set("⚡ SAF CUDA")
 
+        # 2.5. KUYRUK
+        frame_queue = self.create_card(self, "📋 Dönüştürme Kuyruğu")
+        frame_queue.pack(fill="x", padx=15, pady=(0, 5))
+
+        queue_top = ctk.CTkFrame(frame_queue, fg_color="transparent")
+        queue_top.pack(fill="x", padx=10, pady=(0, 5))
+        self.lbl_queue = ctk.CTkLabel(queue_top, text="Kuyruk boş — 'Dönüştür' mevcut ayarları hemen çalıştırır.",
+                                      font=("Arial", 11), text_color="#AAAAAA", anchor="w")
+        self.lbl_queue.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(queue_top, text="➕ Kuyruğa Ekle", width=130,
+                      command=self.add_to_queue).pack(side="left", padx=3)
+        ctk.CTkButton(queue_top, text="➖ Sondakini Sil", width=120, fg_color="#555555",
+                      hover_color="#444444", command=self.remove_last_from_queue).pack(side="left", padx=3)
+        ctk.CTkButton(queue_top, text="🧹 Temizle", width=90, fg_color="#555555",
+                      hover_color="#444444", command=self.clear_queue).pack(side="left", padx=3)
+
+        self.txt_queue = ctk.CTkTextbox(frame_queue, height=78, font=("Consolas", 11),
+                                        fg_color="#1A1A1A", corner_radius=8)
+        self.txt_queue.pack(fill="x", padx=10, pady=(0, 10))
+        self.txt_queue.configure(state="disabled")
+
         # 3. BAŞLAT BUTONU
         self.btn_start = ctk.CTkButton(
             self, text="🚀 SEÇİLİ SEKMEYE GÖRE DÖNÜŞTÜR",
@@ -499,6 +641,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         # --- Sürükle & Bırak (log kutusu hazır olduktan sonra) ---
         self._setup_drag_and_drop()
+
+        # --- KAYITLI AYARLAR (tüm widget'lar oluştuktan sonra) ---
+        self.load_settings()
+        self._refresh_queue_view()
 
     # =======================================================
     # UI: RENK AYARLARI FONKSİYONLARI
@@ -639,6 +785,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 self._force_kill(p)
 
     def on_closing(self):
+        self.save_settings()
         if self.current_process is not None and self.current_process.poll() is None:
             try:
                 self.current_process.kill()
@@ -666,6 +813,22 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     AUDIO_VALUES = ["Kopyala (yeniden kodlama yok)", "64k", "96k", "128k", "192k", "256k", "320k"]
     PRESET_VALUES = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"]
     SCALE_VALUES = ["Orijinal", "240p", "360p", "480p", "720p", "1080p", "1440p", "4K"]
+    VP9_AUDIO_VALUES = ["Kopyala (yeniden kodlama yok)", "64k", "96k", "128k", "192k"]
+
+    # Kayitli ayarlar yuklenirken dogrulama icin: combobox'lar salt-okunur
+    # oldugundan gecersiz bir deger kutuda takili kalir ve ffmpeg'e gider.
+    ALLOWED_VALUES = {
+        "container": ["mkv", "mp4", "webm"],
+        "audio_bitrate": AUDIO_VALUES,
+        "preset": PRESET_VALUES,
+        "scale": SCALE_VALUES,
+        "interp_algo": ["Otomatik", "bilinear", "bicubic", "lanczos"],
+        "selected_codec": ["AV1 (av1_nvenc)", "H.265 (hevc_nvenc)", "H.264 (h264_nvenc)"],
+        "vp9_quality": ["good (Önerilen)", "best (Aşırı Yavaş)", "realtime"],
+        "vp9_speed": ["0 (Maksimum Kalite)", "1 (VOD Önerisi)", "2 (Standart)", "3 (Hızlı)", "4", "5 (En Hızlı)"],
+        "vp9_tiles": ["0 (Tek Sütun)", "1 (Düşük Çöz. için)", "2 (1080p için)", "3 (4K/1440p için)", "4 (8K)"],
+        "vp9_threads": ["Auto", "2", "4", "8", "16", "32"],
+    }
 
     def _create_audio_card(self, parent, tab_vars, pady):
         card = self.create_card(parent, "🎵 Ses Kalitesi")
@@ -875,6 +1038,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         ctk.CTkCheckBox(card_res, text="Kaynaktan büyütme yapma", variable=tab_vars["no_upscale"]).pack(anchor="w", padx=15, pady=(0, 15))
 
         on_cq_change_vp9()
+        self.cq_refreshers[tab_name] = on_cq_change_vp9
 
         self._create_metadata_card(col_right, tab_vars)
 
@@ -933,6 +1097,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         cb_scale.pack(fill="x", padx=15, pady=(0, 15))
 
         on_cq_change()
+        self.cq_refreshers[tab_name] = on_cq_change
 
         self._create_metadata_card(col_right, tab_vars)
         self._create_toggles_card(col_right, tab_vars, "🛠️ Kontrol Şalterleri",
@@ -1008,6 +1173,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                          values=["Otomatik", "bilinear", "bicubic", "lanczos"]).pack(fill="x", padx=15, pady=(0, 15))
 
         on_cq_change()
+        self.cq_refreshers[tab_name] = on_cq_change
 
         self._create_metadata_card(col_right, tab_vars)
 
@@ -1017,17 +1183,132 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     def select_video(self):
         path = filedialog.askopenfilename(
             title="Dönüştürülecek Videoyu Seçin",
+            initialdir=self.last_video_dir or None,
             filetypes=[("Tüm Video Dosyaları", " ".join("*" + e for e in VIDEO_EXTS)), ("Tüm Dosyalar", "*.*")]
         )
         if path:
+            self.last_video_dir = os.path.dirname(path)
             self.video_path.set(path)
             self.log(f"Video Seçildi: {os.path.basename(path)}")
 
     def select_sub(self):
-        path = filedialog.askopenfilename(filetypes=[("Altyazı Dosyası", " ".join("*" + e for e in SUB_EXTS))])
+        path = filedialog.askopenfilename(
+            initialdir=self.last_sub_dir or None,
+            filetypes=[("Altyazı Dosyası", " ".join("*" + e for e in SUB_EXTS))])
         if path:
+            self.last_sub_dir = os.path.dirname(path)
             self.sub_path.set(path)
             self.log(f"Altyazı Eklendi: {os.path.basename(path)}")
+
+    # =======================================================
+    # KUYRUK
+    # =======================================================
+    def _refresh_queue_view(self):
+        self.txt_queue.configure(state="normal")
+        self.txt_queue.delete("1.0", tk.END)
+        for i, job in enumerate(self.job_queue, 1):
+            etiket = "VP9" if job["is_vp9"] else job["codec_v"].split("_")[0].upper()
+            self.txt_queue.insert(tk.END, "%2d. %-38s  %s %s CQ%s -> %s\n" % (
+                i, os.path.basename(job["input_file"])[:38], etiket,
+                job["scale"], job["cq_val"], job["container"]))
+        self.txt_queue.configure(state="disabled")
+        if self.job_queue:
+            self.lbl_queue.configure(
+                text=f"{len(self.job_queue)} iş kuyrukta — 'Dönüştür' hepsini sırayla çalıştırır.",
+                text_color="#00FF00")
+        else:
+            self.lbl_queue.configure(
+                text="Kuyruk boş — 'Dönüştür' mevcut ayarları hemen çalıştırır.",
+                text_color="#AAAAAA")
+
+    def add_to_queue(self):
+        if self.current_process is not None:
+            messagebox.showinfo("Kuyruk", "Dönüştürme sürerken kuyruğa ekleyebilirsiniz, "
+                                          "ancak mevcut çalışma bittikten sonra işlenir.")
+        job = self._prepare_job()
+        if job is None:
+            return
+        self.job_queue.append(job)
+        self._refresh_queue_view()
+        self.log(f"➕ Kuyruğa eklendi ({len(self.job_queue)}): {os.path.basename(job['output_file'])}")
+
+    def remove_last_from_queue(self):
+        if self.job_queue:
+            job = self.job_queue.pop()
+            self._refresh_queue_view()
+            self.log(f"➖ Kuyruktan çıkarıldı: {os.path.basename(job['input_file'])}")
+
+    def clear_queue(self):
+        if self.job_queue and messagebox.askyesno("Kuyruğu Temizle",
+                                                  f"{len(self.job_queue)} iş kuyruktan silinecek. Emin misiniz?"):
+            self.job_queue.clear()
+            self._refresh_queue_view()
+            self.log("🧹 Kuyruk temizlendi.")
+
+    # =======================================================
+    # ONIZLEME KARESI
+    # =======================================================
+    def show_preview_frame(self):
+        """
+        Kodlamayla AYNI filtre zincirini tek kareye uygulayip acar. Renk
+        ayarlarini 40 dakikalik bir encode baslatmadan gorebilmek icin.
+        """
+        if not self.video_path.get():
+            messagebox.showerror("Hata", "Önce bir video seçin!")
+            return
+        if not os.path.isfile(self.video_path.get()):
+            messagebox.showerror("Hata", "Seçilen video dosyası bulunamadı.")
+            return
+
+        cfg = self.collect_config()
+        self.log("🖼️ Önizleme karesi üretiliyor...")
+
+        def _worker():
+            try:
+                probes = {
+                    "cuda_frames": (self.can_use_cuda_frames(cfg["input_file"])
+                                    if cfg["is_pure_cuda"] else False),
+                    "pix_fmt": self.get_video_pix_fmt(cfg["input_file"]),
+                }
+                # Kirpma yoksa videonun ortasindan bir kare al: ilk kare cogu
+                # zaman siyah acilis olur ve renk ayarini degerlendirmeye yaramaz.
+                zaman = parse_time(cfg.get("trim_start"))
+                if zaman is None:
+                    sure = self.get_video_duration(cfg["input_file"])
+                    zaman = sure / 2 if sure > 0 else 0.0
+                png = os.path.join(tempfile.gettempdir(), "nvconv_onizleme.png")
+                cmd = build_preview_command(cfg, probes, png, zaman)
+                sonuc = subprocess.run(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                    errors="replace", timeout=120,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                )
+                if sonuc.returncode == 0 and os.path.exists(png):
+                    self._thread_safe_log(f"🖼️ Önizleme hazır ({zaman:.1f}. saniye): {png}")
+                    os.startfile(png)
+                else:
+                    self._thread_safe_log("❌ Önizleme üretilemedi:")
+                    for satir in (sonuc.stderr or "").strip().splitlines()[-6:]:
+                        self._thread_safe_log(satir)
+            except Exception as e:
+                self._thread_safe_log(f"❌ Önizleme hatası: {e}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def select_output_dir(self):
+        yol = filedialog.askdirectory(title="Çıkış Klasörünü Seçin",
+                                      initialdir=self.output_dir.get() or self.last_video_dir or None)
+        if yol:
+            self.output_dir.set(yol)
+            self.log(f"📂 Çıkış klasörü: {yol}")
+
+    def _refresh_all_cq_displays(self):
+        """Ayarlar yuklendikten sonra CQ etiket/renklerini tazeler."""
+        for fn in self.cq_refreshers.values():
+            try:
+                fn()
+            except Exception:
+                pass
 
     def log(self, message):
         self.txt_log.configure(state='normal')
@@ -1202,14 +1483,117 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     def _build_output_path(self, cfg):
         """Cikti dosyasi adini uretir. Saf fonksiyon - Tk'ye dokunmaz."""
         klasor, dosya_adi = os.path.split(cfg["input_file"])
+        if cfg.get("output_dir"):
+            klasor = cfg["output_dir"]
         isim, _ = os.path.splitext(dosya_adi)
         etiket_codec = "VP9" if cfg["is_vp9"] else cfg["codec_v"].split('_')[0].upper()
         etiket_scale = cfg["scale"] if cfg["scale"] != "Orijinal" else "Orijinal"
         etiket_bwdif = "_Deint" if cfg["use_bwdif"] else ""
+        # CQ etiketi olmadan ayni videoyu iki farkli kaliteyle denemek ayni
+        # dosya adina yaziyor ve gereksiz "uzerine yaz?" sorusu cikiyordu.
+        etiket_cq = f"_CQ{cfg['cq_val']}" if cfg.get("name_with_cq") else ""
+        etiket_trim = "_Kirpik" if (parse_time(cfg.get("trim_start")) or
+                                    parse_time(cfg.get("trim_end"))) else ""
         return os.path.join(
             klasor,
-            f"{isim}_{etiket_codec}_{etiket_scale}{etiket_bwdif}.{cfg['container']}"
+            f"{isim}_{etiket_codec}_{etiket_scale}{etiket_bwdif}{etiket_cq}{etiket_trim}.{cfg['container']}"
         )
+
+    # =======================================================
+    # AYAR KALICILIGI
+    # =======================================================
+    def _settings_snapshot(self):
+        """Kaydedilecek ayarlari toplar (ana thread)."""
+        data = {
+            "aktif_sekme": self.tabview.get(),
+            "son_video_klasoru": self.last_video_dir,
+            "son_altyazi_klasoru": self.last_sub_dir,
+            "cikis_klasoru": self.output_dir.get(),
+            "ada_cq_ekle": self.name_with_cq.get(),
+            "renk_profili": self.color_preset.get(),
+            "parlaklik": self.val_brightness.get(),
+            "kontrast": self.val_contrast.get(),
+            "doygunluk": self.val_saturation.get(),
+            "gamma": self.val_gamma.get(),
+            "sekmeler": {},
+        }
+        for ad, tab_vars in self.tabs.items():
+            data["sekmeler"][ad] = {
+                k: v.get() for k, v in tab_vars.items() if hasattr(v, "get")
+            }
+        return data
+
+    def save_settings(self):
+        try:
+            os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as fh:
+                json.dump(self._settings_snapshot(), fh, ensure_ascii=False, indent=1)
+        except Exception:
+            pass  # ayar kaydedilememesi programi engellememelidir
+
+    def load_settings(self):
+        """
+        Kayitli ayarlari yukler. Bozuk/eski dosya programi acilmaz hale
+        getirmemeli: her deger tek tek ve dogrulanarak uygulanir.
+        """
+        try:
+            with open(SETTINGS_PATH, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+
+        def ata(var, deger, gecerli=None):
+            if deger is None:
+                return
+            try:
+                if gecerli is not None and deger not in gecerli:
+                    return
+                var.set(deger)
+            except Exception:
+                pass
+
+        self.last_video_dir = data.get("son_video_klasoru") or ""
+        self.last_sub_dir = data.get("son_altyazi_klasoru") or ""
+        cikis = data.get("cikis_klasoru") or ""
+        if cikis and os.path.isdir(cikis):
+            self.output_dir.set(cikis)
+        ata(self.name_with_cq, data.get("ada_cq_ekle"))
+        ata(self.color_preset, data.get("renk_profili"),
+            ["Varsayılan (Devre Dışı)", "Karanlık Video Kurtarma", "Özel Ayarlar"])
+        for var, anahtar in ((self.val_brightness, "parlaklik"), (self.val_contrast, "kontrast"),
+                             (self.val_saturation, "doygunluk"), (self.val_gamma, "gamma")):
+            deger = data.get(anahtar)
+            if isinstance(deger, (int, float)):
+                ata(var, float(deger))
+
+        for ad, kayit in (data.get("sekmeler") or {}).items():
+            tab_vars = self.tabs.get(ad)
+            if not tab_vars or not isinstance(kayit, dict):
+                continue
+            for anahtar, deger in kayit.items():
+                var = tab_vars.get(anahtar)
+                if var is None or not hasattr(var, "set"):
+                    continue
+                # Combobox'lar salt-okunur oldugu icin gecersiz bir kayitli deger
+                # kutuda "takili" kalirdi; bu yuzden listeye karsi dogruluyoruz.
+                gecerli = self.ALLOWED_VALUES.get(anahtar)
+                if gecerli is not None and deger not in gecerli:
+                    continue
+                try:
+                    var.set(deger)
+                except Exception:
+                    pass
+
+        aktif = data.get("aktif_sekme")
+        if aktif in self.tabs:
+            try:
+                self.tabview.set(aktif)
+            except Exception:
+                pass
+        self.on_tab_change()
+        self._refresh_all_cq_displays()
 
     def collect_config(self):
         """
@@ -1251,6 +1635,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "no_upscale": tab_vars["no_upscale"].get() if "no_upscale" in tab_vars else False,
             "ten_bit": tab_vars["ten_bit"].get() if "ten_bit" in tab_vars else True,
             "interp_algo": tab_vars["interp_algo"].get() if "interp_algo" in tab_vars else "Otomatik",
+            "output_dir": self.output_dir.get().strip(),
+            "name_with_cq": self.name_with_cq.get(),
+            "trim_start": self.trim_start.get(),
+            "trim_end": self.trim_end.get(),
             "color_preset": self.color_preset.get(),
             "brightness": self.val_brightness.get(),
             "contrast": self.val_contrast.get(),
@@ -1283,28 +1671,52 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         cfg["output_file"] = self._build_output_path(cfg)
         return cfg
 
-    def start_thread(self):
+    def _prepare_job(self):
+        """
+        Mevcut arayuz durumundan bir is tanimi uretir; dogrulama ve kullanici
+        onaylari ANA THREAD'de burada alinir. Uygun degilse None doner.
+        """
         if not self.video_path.get():
             messagebox.showerror("Hata", "Önce dönüştürülecek videoyu seçin!")
-            return
+            return None
 
-        # --- AYARLAR VE ONAYLAR: HEPSI ANA THREAD'DE ---
         cfg = self.collect_config()
 
         if not os.path.isfile(cfg["input_file"]):
             messagebox.showerror("Hata", f"Seçilen video dosyası bulunamadı:\n{cfg['input_file']}")
-            return
+            return None
+        if cfg["output_dir"] and not os.path.isdir(cfg["output_dir"]):
+            messagebox.showerror("Hata", f"Çıkış klasörü bulunamadı:\n{cfg['output_dir']}")
+            return None
+        for anahtar, etiket in (("trim_start", "Başlangıç"), ("trim_end", "Bitiş")):
+            ham = (cfg.get(anahtar) or "").strip()
+            if ham and parse_time(ham) is None:
+                messagebox.showerror("Hata", f"Kırpma {etiket} değeri anlaşılamadı: '{ham}'\n\n"
+                                             "Beklenen biçim: 90  |  01:30  |  00:01:30.5")
+                return None
+        bas, son = parse_time(cfg.get("trim_start")), parse_time(cfg.get("trim_end"))
+        if bas and son and son <= bas:
+            messagebox.showerror("Hata", "Kırpma bitişi başlangıçtan sonra olmalı.")
+            return None
 
         if os.path.exists(cfg["output_file"]):
-            cevap = messagebox.askyesno(
-                "Dosya Zaten Var",
-                f"'{os.path.basename(cfg['output_file'])}' zaten mevcut.\n\nÜzerine yazmak istiyor musunuz?"
-            )
-            if not cevap:
+            if not messagebox.askyesno(
+                    "Dosya Zaten Var",
+                    f"'{os.path.basename(cfg['output_file'])}' zaten mevcut.\n\nÜzerine yazmak istiyor musunuz?"):
                 self.log("⚠️ İşlem iptal edildi (dosya üzerine yazma reddedildi).")
-                return
+                return None
+        return cfg
 
-        self.current_output_file = cfg["output_file"]
+    def start_thread(self):
+        # Kuyruk doluysa onu isle; bos ise mevcut ayarlarla tek is calistir
+        # (eski davranis birebir korunur).
+        if self.job_queue:
+            jobs = list(self.job_queue)
+        else:
+            job = self._prepare_job()
+            if job is None:
+                return
+            jobs = [job]
 
         self.progress_bar.set(0)
         self.lbl_progress.configure(text="% 0.0")
@@ -1320,9 +1732,42 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.is_paused = False
         self._encode_start_time = None
 
-        threading.Thread(target=self.run_ffmpeg, args=(cfg,), daemon=True).start()
+        threading.Thread(target=self.run_queue, args=(jobs,), daemon=True).start()
 
-    def run_ffmpeg(self, cfg):
+    def run_queue(self, jobs):
+        """Isleri sirayla calistirir. Kullanici iptal ederse kuyruk durur."""
+        try:
+            toplam = len(jobs)
+            for sira, cfg in enumerate(jobs, 1):
+                if self.stop_requested:
+                    self._thread_safe_log(f"⏹️ Kuyruk durduruldu ({sira - 1}/{toplam} tamamlandı).")
+                    break
+                if toplam > 1:
+                    self._thread_safe_log("")
+                    self._thread_safe_log(f"📋 KUYRUK {sira}/{toplam}: {os.path.basename(cfg['input_file'])}")
+                self.current_output_file = cfg["output_file"]
+                self.delete_requested = False
+                self.run_ffmpeg(cfg, son_is=(sira == toplam))
+                if not self.stop_requested and toplam > 1:
+                    self.after(0, self._pop_finished_job)
+            if toplam > 1 and not self.stop_requested:
+                self._thread_safe_log(f"🏁 KUYRUKTAKİ {toplam} İŞİN TAMAMI BİTTİ.")
+        finally:
+            def _bitir():
+                self.btn_start.configure(state="normal", text="🚀 SEÇİLİ SEKMEYE GÖRE DÖNÜŞTÜR")
+                self.btn_pause.configure(state="disabled", text="⏸️ Pause")
+                self.btn_stop.configure(state="disabled")
+                self.btn_delete.configure(state="disabled")
+                self._refresh_queue_view()
+            self.after(0, _bitir)
+            self.current_process = None
+
+    def _pop_finished_job(self):
+        if self.job_queue:
+            self.job_queue.pop(0)
+            self._refresh_queue_view()
+
+    def run_ffmpeg(self, cfg, son_is=True):
         """
         Worker thread. DIKKAT: Bu metot hicbir Tk degiskenine/widget'ina DOKUNMAZ.
         Butun ayarlar ve kullanici onaylari ana thread'de alinip cfg ile gelir;
@@ -1442,18 +1887,21 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 self._thread_safe_log("=" * 60)
                 self._thread_safe_log(f"🎉 İŞLEM KUSURSUZ TAMAMLANDI!")
 
-                try:
-                    abs_out_path = os.path.abspath(output_file)
-                    subprocess.Popen(f'explorer /select,"{abs_out_path}"')
-                except Exception as e:
-                    self._thread_safe_log(f"Klasör açılamadı: {e}")
+                # Klasor/ses/dialog yalnizca kuyrugun SON isinde: 10 islik bir
+                # kuyrukta 10 kez explorer acmak kimsenin istedigi sey degil.
+                if son_is:
+                    try:
+                        abs_out_path = os.path.abspath(output_file)
+                        subprocess.Popen(f'explorer /select,"{abs_out_path}"')
+                    except Exception as e:
+                        self._thread_safe_log(f"Klasör açılamadı: {e}")
 
-                try:
-                    winsound.PlaySound(r"C:\Windows\Media\notify.wav", winsound.SND_FILENAME | winsound.SND_ASYNC)
-                except Exception:
-                    pass
+                    try:
+                        winsound.PlaySound(r"C:\Windows\Media\notify.wav", winsound.SND_FILENAME | winsound.SND_ASYNC)
+                    except Exception:
+                        pass
 
-                self.after(0, messagebox.showinfo, "Başarılı", f"Arşivleme tamamlandı!\n\nDosya:\n{os.path.basename(output_file)}")
+                    self.after(0, messagebox.showinfo, "Başarılı", f"Arşivleme tamamlandı!\n\nDosya:\n{os.path.basename(output_file)}")
             else:
                 self._thread_safe_log("=" * 60)
                 self._thread_safe_log(f"❌ KRİTİK HATA OLUŞTU (çıkış kodu: {self.current_process.returncode})")
@@ -1466,12 +1914,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         except Exception as e:
             self._thread_safe_log(f"❌ BEKLENMEYEN HATA: {str(e)}")
         finally:
-            def _reset_buttons():
-                self.btn_start.configure(state="normal", text="🚀 SEÇİLİ SEKMEYE GÖRE DÖNÜŞTÜR")
-                self.btn_pause.configure(state="disabled", text="⏸️ Pause")
-                self.btn_stop.configure(state="disabled")
-                self.btn_delete.configure(state="disabled")
-            self.after(0, _reset_buttons)
+            # Butonlari run_queue sifirlar: kuyrugun ortasinda "Baslat"in tekrar
+            # aktiflesmesi ikinci bir kuyrugun paralel baslamasina yol acardi.
             self.current_process = None
 
 if __name__ == "__main__":

@@ -369,3 +369,72 @@ def test_scale_map_tum_secenekleri_kapsiyor():
     """Arayuzdeki her cozunurluk secenegi SCALE_MAP'te bulunmali."""
     secenekler = set(nv.FFmpegStudioPro.SCALE_VALUES) - {"Orijinal"}
     assert secenekler <= set(nv.SCALE_MAP)
+
+
+# ---------------------------------------------------------------- kirpma
+@pytest.mark.parametrize("metin,beklenen", [
+    ("90", 90.0), ("01:30", 90.0), ("00:01:30.5", 90.5), ("2:00:00", 7200.0),
+    ("", None), ("   ", None), (None, None),
+    ("abc", None), ("-5", None), ("1:2:3:4", None), ("1:-2", None),
+])
+def test_parse_time(metin, beklenen):
+    assert nv.parse_time(metin) == beklenen
+
+
+def test_trim_args_bas_ve_bitis():
+    """-ss girdiden once geldigi icin bitis, sure farki (-t) olarak verilir."""
+    assert nv.trim_args({"trim_start": "00:10", "trim_end": "00:25"}) == ["-ss", "10.000", "-t", "15.000"]
+
+
+def test_trim_args_sadece_bas():
+    assert nv.trim_args({"trim_start": "5"}) == ["-ss", "5.000"]
+
+
+def test_trim_args_sadece_bitis():
+    assert nv.trim_args({"trim_end": "12"}) == ["-t", "12.000"]
+
+
+def test_trim_args_bos():
+    assert nv.trim_args({}) == []
+    assert nv.trim_args({"trim_start": "", "trim_end": ""}) == []
+
+
+def test_trim_args_gecersiz_aralik_yok_sayilir():
+    """Bitis baslangictan kucukse -t uretilmez (negatif sure olusmasin)."""
+    assert nv.trim_args({"trim_start": "30", "trim_end": "10"}) == ["-ss", "30.000"]
+
+
+def test_kirpma_komutta_girdiden_once():
+    cmd, _ = nv.build_command(cfg(trim_start="10", trim_end="20"), probes())
+    assert cmd.index("-ss") < cmd.index("-i")
+
+
+# ---------------------------------------------------------------- onizleme
+def test_onizleme_kodlamayla_ayni_filtreleri_kullanir():
+    c = cfg(scale="720p", color_preset="Karanlık Video Kurtarma")
+    p = probes()
+    kodlama, _ = nv.build_command(c, p)
+    onizleme = nv.build_preview_command(c, p, "x.png")
+    assert vf_of(kodlama) == vf_of(onizleme)
+
+
+def test_onizleme_cuda_zincirini_ram_e_indirir():
+    c = cfg(is_pure_cuda=True, scale="720p")
+    cmd = nv.build_preview_command(c, probes(cuda_frames=True), "x.png")
+    assert vf_of(cmd).endswith("hwdownload,format=nv12")
+
+
+def test_onizleme_renk_filtresinden_sonra_cift_indirme_yapmaz():
+    """hwupload_cuda ile biten zincire ikinci hwdownload eklemek ffmpeg'i durduruyordu."""
+    c = cfg(is_pure_cuda=True, color_preset="Karanlık Video Kurtarma")
+    cmd = nv.build_preview_command(c, probes(cuda_frames=True), "x.png")
+    vf = vf_of(cmd)
+    assert "hwupload_cuda" not in vf
+    assert vf.count("hwdownload") == 1
+
+
+def test_onizleme_tek_kare_ve_png():
+    cmd = nv.build_preview_command(cfg(), probes(), "cikti.png", 12.5)
+    assert val_of(cmd, "-frames:v") == "1"
+    assert cmd[-1] == "cikti.png"
+    assert val_of(cmd, "-ss") == "12.500"
