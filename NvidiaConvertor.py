@@ -977,9 +977,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             self._auto_set_cq(codec, choice, tab_vars, slider_cq, lbl_cq_title, lbl_cq_status)
 
         def on_cuda_codec_change(choice):
-            if "AV1" in choice: tab_vars["container"].set("mkv")
-            else: tab_vars["container"].set("mp4")
+            # Etiket metninde arama yapmak yerine zaten ayristirilan codec adi kullanilir.
             codec = choice.split("(")[1].split(")")[0]
+            tab_vars["container"].set("mkv" if codec == "av1_nvenc" else "mp4")
             self._auto_set_cq(codec, tab_vars["scale"].get(), tab_vars, slider_cq, lbl_cq_title, lbl_cq_status)
 
         card_codec = self.create_card(col_left, "🚀 Donanım Motoru (VRAM)")
