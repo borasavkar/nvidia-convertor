@@ -1022,33 +1022,48 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                      height=16, wraplength=430).pack(anchor="w", padx=(40, 12),
                                                      pady=(0, 10 if son else 1))
 
-    def _create_toggles_card(self, parent, tab_vars, title, bwdif_text, cuda=False):
-        card = self.create_card(parent, title)
-        card.pack(fill="x", pady=10)
+    # Salter kartinda kac sutun kullanilacagi. 3 sutunda aciklamalar tek satira
+    # sigacak sekilde kisaltildi; iki satira tasarsa kazanc kaybolur.
+    SALTER_SUTUN = 3
 
-        self._add_toggle(
-            card, bwdif_text, tab_vars["bwdif"],
-            ("Taraklı (interlaced) görüntüyü düzleştirir; GPU'da çalışır."
-             if cuda else
-             "Eski TV/DVD kayıtlarındaki yatay tarak izlerini giderir.")
-            + " Kaynak taraklı değilse gereksizdir.")
-        self._add_toggle(
-            card, "Zamansal AQ (temporal-aq)", tab_vars["temporal_aq"],
-            "Bit bütçesini hareketli sahnelere kaydırır. Genelde açık kalmalı.")
-        self._add_toggle(
-            card, "Çift Geçiş (-multipass 2)", tab_vars["multipass"],
-            "İki geçişte kodlar: daha yavaş ama zor sahnelerde kalite daha kararlı.")
-        self._add_toggle(
-            card, "Uzun GOP (-g 300)", tab_vars["long_gop"],
-            "Anahtar kareleri seyrekleştirir: dosya küçülür, ileri/geri sarma kabalaşır.")
-        self._add_toggle(
-            card, "Kaynaktan büyütme yapma", tab_vars["no_upscale"],
-            "Hedef çözünürlük kaynaktan büyükse ölçekleme atlanır; "
-            "büyütmek kalite katmaz, sadece dosyayı şişirir.")
-        self._add_toggle(
-            card, "10-bit kodla (main10)", tab_vars["ten_bit"],
-            "8-bit kaynakta bile renk geçişlerindeki bantlanmayı azaltır. "
-            "Kapatmak eski cihazlarla uyumu artırır.", son=True)
+    def _create_toggles_card(self, parent, tab_vars, title, bwdif_text, cuda=False):
+        """
+        Kontrol salterleri karti. Sekmenin ALTINDA tam genislikte, salterler
+        yan yana yerlestirilir; dikey olarak sag sutunda dizildiginde tek basina
+        ~354 px yer kapliyor ve sekme yuksekligini o belirliyordu.
+        Karti yerlestirmez - cagiran grid/pack ile konumlandirir.
+        """
+        card = self.create_card(parent, title)
+
+        ogeler = [
+            (bwdif_text, tab_vars["bwdif"],
+             "GPU'da tarak izlerini giderir." if cuda
+             else "Tarak izlerini giderir (taraklı kaynak için)."),
+            ("Zamansal AQ (temporal-aq)", tab_vars["temporal_aq"],
+             "Biti hareketli sahnelere kaydırır."),
+            ("Çift Geçiş (-multipass 2)", tab_vars["multipass"],
+             "Daha yavaş, zor sahnelerde daha kararlı."),
+            ("Uzun GOP (-g 300)", tab_vars["long_gop"],
+             "Dosya küçülür, sarma kabalaşır."),
+            ("Kaynaktan büyütme yapma", tab_vars["no_upscale"],
+             "Büyütme yapmaz, biti boşa harcamaz."),
+            ("10-bit kodla (main10)", tab_vars["ten_bit"],
+             "Bantlanmayı azaltır; kapalıysa uyum artar."),
+        ]
+
+        kafes = ctk.CTkFrame(card, fg_color="transparent")
+        kafes.pack(fill="x", padx=10, pady=(0, 10))
+        for i in range(self.SALTER_SUTUN):
+            kafes.grid_columnconfigure(i, weight=1, uniform="salter")
+
+        for sira, (metin, degisken, aciklama) in enumerate(ogeler):
+            satir, sutun = divmod(sira, self.SALTER_SUTUN)
+            hucre = ctk.CTkFrame(kafes, fg_color="transparent")
+            hucre.grid(row=satir, column=sutun, sticky="nsew", padx=4, pady=(4, 2))
+            ctk.CTkCheckBox(hucre, text=metin, variable=degisken).pack(anchor="w")
+            ctk.CTkLabel(hucre, text=aciklama, font=("Arial", 10, "italic"),
+                         text_color="#8A8A8A", justify="left", anchor="w",
+                         height=16, wraplength=260).pack(anchor="w", padx=(26, 0), pady=(1, 0))
         return card
 
     def _uygun_yukseklik(self, istenen):
@@ -1309,8 +1324,11 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.cq_refreshers[tab_name] = on_cq_change
 
         self._create_metadata_card(col_right, tab_vars)
-        self._create_toggles_card(col_right, tab_vars, "🛠️ Kontrol Şalterleri",
-                                  "Taraklanmayı Gider (bwdif)")
+        # Salterler sekmenin ALTINDA, iki sutuna yayilarak: sag sutunda dikey
+        # dizildiginde sekme yuksekligini tek basina belirliyordu.
+        kart_salter = self._create_toggles_card(main_grid, tab_vars, "🛠️ Kontrol Şalterleri",
+                                                "Taraklanmayı Gider (bwdif)")
+        kart_salter.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(10, 0))
 
     # =======================================================
     # SAF CUDA SEKMESİ
@@ -1386,8 +1404,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         self._create_metadata_card(col_right, tab_vars)
 
-        self._create_toggles_card(col_right, tab_vars, "🛠️ CUDA Kontrol Şalterleri",
-                                  "Donanımsal Tarak Giderici (yadif_cuda)", cuda=True)
+        kart_salter = self._create_toggles_card(main_grid, tab_vars, "🛠️ CUDA Kontrol Şalterleri",
+                                                "Donanımsal Tarak Giderici (yadif_cuda)", cuda=True)
+        kart_salter.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(10, 0))
 
     def select_video(self):
         path = filedialog.askopenfilename(
