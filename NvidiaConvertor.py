@@ -205,6 +205,11 @@ VIDEO_EXTS = ('.mp4', '.mkv', '.avi', '.mov', '.ts', '.vob', '.y4m',
               '.webm', '.flv', '.wmv', '.m4v', '.mpg', '.mpeg')
 SUB_EXTS = ('.srt', '.ass', '.vtt')
 
+# Terminal kutusunda gorunecek satir sayisi. Kucuk tutuluyor cunku ayar
+# kartlari zaten cok yer kapliyor; log otomatik kaydigi icin en son satirlar
+# her zaman gorunur kalir.
+LOG_SATIR_SAYISI = 3
+
 
 def get_cq_range(codec, scale):
     codec_ranges = CQ_RANGES.get(codec, CQ_RANGES["hevc_nvenc"])
@@ -602,9 +607,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # kendi grid satırlarında sabit durur; hangi ekran boyutunda olursa
         # olsun ikisi de her zaman görünür.
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=6)              # ayarlar (kaydırılabilir)
+        self.grid_rowconfigure(0, weight=1)              # ayarlar (kaydırılabilir)
         self.grid_rowconfigure(1, weight=0)              # Dönüştür butonu
-        self.grid_rowconfigure(2, weight=1, minsize=170)  # log
+        self.grid_rowconfigure(2, weight=0)              # log (sabit: 3 satır)
 
         self.ust_alan = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.ust_alan.grid(row=0, column=0, sticky="nsew")
@@ -776,7 +781,11 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.btn_delete = ctk.CTkButton(frame_prog_controls, text="🗑️ Sil", width=60, state="disabled", fg_color="#FF0000", hover_color="#CC0000", command=self.delete_process)
         self.btn_delete.pack(side="left", padx=3)
 
-        self.txt_log = ctk.CTkTextbox(frame_log, height=130, font=("Consolas", 11), text_color="#00FF00", fg_color="#000000", corner_radius=10)
+        # 3 satirlik terminal: Consolas 11'de satir 18 px. Sabit tutulur (grid
+        # agirligi 0) ki pencere buyudugunde artan yer ayarlara gitsin.
+        self.txt_log = ctk.CTkTextbox(frame_log, height=LOG_SATIR_SAYISI * 18 + 8,
+                                      font=("Consolas", 11), text_color="#00FF00",
+                                      fg_color="#000000", corner_radius=10)
         self.txt_log.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self.txt_log.configure(state="disabled")
 
