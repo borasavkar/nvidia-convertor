@@ -21,3 +21,6 @@ desktop.ini
 
 # Pakete dahil edilecek FFmpeg ikilileri (surum kontrolune girmez)
 ffmpeg/
+
+# Tcl 9 zipfs cikarimi (derleme sirasinda uretilir)
+build_tcl/

@@ -438,3 +438,27 @@ def test_onizleme_tek_kare_ve_png():
     assert val_of(cmd, "-frames:v") == "1"
     assert cmd[-1] == "cikti.png"
     assert val_of(cmd, "-ss") == "12.500"
+
+
+# ---------------------------------------------------------------- 12-bit sinir
+def test_12bit_renk_gidis_donusu_desteklenmiyor():
+    """ffmpeg 9.0'da 12-bit CUDA karesi RAM'e indirilemiyor."""
+    assert nv.cuda_color_roundtrip_ok("yuv420p") is True
+    assert nv.cuda_color_roundtrip_ok("yuv420p10le") is True
+    assert nv.cuda_color_roundtrip_ok("yuv420p12le") is False
+
+
+def test_color_filter_of():
+    assert nv.color_filter_of(cfg()) == ""
+    assert nv.color_filter_of(cfg(color_preset="Özel Ayarlar")) == ""
+    assert "gamma=1.40" in nv.color_filter_of(cfg(color_preset="Özel Ayarlar", gamma=1.4))
+    assert nv.color_filter_of(cfg(color_preset="Karanlık Video Kurtarma")).startswith("eq=")
+
+
+def test_12bit_cpu_yolunda_renk_filtresi_sarmalanmaz():
+    """cuda_frames=False geldiginde zincir hwdownload icermemeli."""
+    cmd, _ = nv.build_command(
+        cfg(is_pure_cuda=True, color_preset="Karanlık Video Kurtarma"),
+        probes(cuda_frames=False, pix_fmt="yuv420p12le"))
+    assert "hwdownload" not in vf_of(cmd)
+    assert "eq=" in vf_of(cmd)

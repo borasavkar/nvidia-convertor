@@ -20,29 +20,107 @@ SETTINGS_PATH = os.path.join(
 )
 
 
-def find_tool(name):
+def find_tool(name, tercih_dizin=None):
     """
     ffmpeg/ffprobe konumunu bulur.
 
-    Once UYGULAMANIN YANINDA aranir; boylece tasinabilir (portable) dagitimda
-    ffmpeg.exe'yi exe ile ayni klasore (ya da ffmpeg\\bin altina) koymak yeterli
-    olur ve kullanicinin sisteme ffmpeg kurmasi gerekmez.
-    Bulunamazsa PATH'e dusulur (gelistirme ve klasik kurulum senaryosu).
+    Arama sirasi:
+      1. Kullanicinin arayuzden elle gosterdigi klasor (ayarlarda saklanir)
+      2. Uygulamanin yani / paketin ici  -> tasinabilir dagitim
+      3. PATH                            -> klasik kurulum (Windows ve Linux)
+      4. Yaygin kurulum konumlari        -> PATH'e eklenmemis kurulumlar
+
+    Boylece cogu makinede hicbir sey yapmadan bulunur; bulunamazsa kullanici
+    arayuzden klasoru gosterebilir.
     """
     exe = name + (".exe" if os.name == "nt" else "")
-    kokler = []
-    if getattr(sys, "frozen", False):
-        kokler.append(os.path.dirname(sys.executable))        # exe'nin yani
-        if getattr(sys, "_MEIPASS", None):
-            kokler.append(sys._MEIPASS)                       # onefile paket ici
-    else:
-        kokler.append(os.path.dirname(os.path.abspath(__file__)))
-    for kok in kokler:
-        for alt in ("", "ffmpeg", os.path.join("ffmpeg", "bin"), "bin"):
+    altlar = ("", "bin", "ffmpeg", os.path.join("ffmpeg", "bin"))
+
+    def ara(kok):
+        for alt in altlar:
             aday = os.path.join(kok, alt, exe)
             if os.path.isfile(aday):
                 return aday
-    return shutil.which(name) or name
+        return None
+
+    # 1) kullanicinin gosterdigi klasor
+    if tercih_dizin:
+        bulunan = ara(tercih_dizin)
+        if bulunan:
+            return bulunan
+
+    # 2) uygulamanin yani / paket ici
+    if getattr(sys, "frozen", False):
+        kokler = [os.path.dirname(sys.executable)]
+        if getattr(sys, "_MEIPASS", None):
+            kokler.append(sys._MEIPASS)
+    else:
+        kokler = [os.path.dirname(os.path.abspath(__file__))]
+    for kok in kokler:
+        bulunan = ara(kok)
+        if bulunan:
+            return bulunan
+
+    # 3) PATH
+    yol = shutil.which(name)
+    if yol:
+        return yol
+
+    # 4) yaygin kurulum konumlari
+    for kok in common_tool_dirs():
+        bulunan = ara(kok)
+        if bulunan:
+            return bulunan
+
+    return name
+
+
+def common_tool_dirs():
+    """PATH'e eklenmemis olabilecek yaygin FFmpeg kurulum konumlari."""
+    yollar = []
+    if os.name == "nt":
+        for degisken in ("ProgramFiles", "ProgramFiles(x86)", "ProgramData",
+                         "LOCALAPPDATA", "USERPROFILE"):
+            kok = os.environ.get(degisken)
+            if not kok:
+                continue
+            yollar += [
+                os.path.join(kok, "ffmpeg"),
+                os.path.join(kok, "scoop", "apps", "ffmpeg", "current"),
+                os.path.join(kok, "chocolatey", "bin"),
+                os.path.join(kok, "Microsoft", "WinGet", "Links"),
+            ]
+        yollar += [r"C:\ffmpeg", r"C:\Program Files\ffmpeg"]
+    else:
+        yollar += ["/usr/bin", "/usr/local/bin", "/opt/ffmpeg",
+                   "/snap/bin", "/var/lib/flatpak/exports/bin",
+                   os.path.expanduser("~/.local/bin"),
+                   os.path.expanduser("~/bin")]
+    return yollar
+
+
+def tools_usable(ffmpeg_bin, ffprobe_bin):
+    """Bulunan ikililerin GERCEKTEN calistigini dogrular ('-version' denemesi)."""
+    for arac in (ffmpeg_bin, ffprobe_bin):
+        try:
+            sonuc = subprocess.run(
+                [arac, "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=20,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            if sonuc.returncode != 0:
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def resolve_tools(tercih_dizin=None):
+    """FFMPEG_BIN / FFPROBE_BIN global degerlerini yeniden cozer."""
+    global FFMPEG_BIN, FFPROBE_BIN
+    FFMPEG_BIN = find_tool("ffmpeg", tercih_dizin)
+    FFPROBE_BIN = find_tool("ffprobe", tercih_dizin)
+    return FFMPEG_BIN, FFPROBE_BIN
 
 
 FFMPEG_BIN = find_tool("ffmpeg")
@@ -174,6 +252,28 @@ def trim_args(cfg):
     return args
 
 
+def color_filter_of(cfg):
+    """Secili renk profiline karsilik gelen eq filtresi (yoksa bos dize)."""
+    if cfg["color_preset"] == "Karanlık Video Kurtarma":
+        return "eq=brightness=0.05:contrast=1.15:saturation=1.1:gamma=1.5"
+    if cfg["color_preset"] == "Özel Ayarlar":
+        b, c, s, g = cfg["brightness"], cfg["contrast"], cfg["saturation"], cfg["gamma"]
+        if b != 0.0 or c != 1.0 or s != 1.0 or g != 1.0:
+            return f"eq=brightness={b:.2f}:contrast={c:.2f}:saturation={s:.2f}:gamma={g:.2f}"
+    return ""
+
+
+def cuda_color_roundtrip_ok(pix_fmt):
+    """
+    CUDA karesini renk filtresi icin RAM'e indirip geri yuklemek mumkun mu?
+
+    8 ve 10 bitte evet (nv12 / p010le). 12 bit ve ustunde ffmpeg 9.0 ile
+    HICBIR indirme formati kabul edilmiyor ("Invalid output format ... for
+    hwframe download"); bu durumda filtreleri CPU'da calistirmak gerekir.
+    """
+    return cuda_download_format(pix_fmt) != "p016le"
+
+
 def build_filters(cfg, probes):
     """
     Video filtre zincirini kurar. SAF FONKSIYON.
@@ -204,13 +304,7 @@ def build_filters(cfg, probes):
     if cuda_frames and not cfg["ten_bit"] and not cfg["is_vp9"]:
         vf_filters.append("scale_cuda=format=nv12")
 
-    color_filter = ""
-    if cfg["color_preset"] == "Karanlık Video Kurtarma":
-        color_filter = "eq=brightness=0.05:contrast=1.15:saturation=1.1:gamma=1.5"
-    elif cfg["color_preset"] == "Özel Ayarlar":
-        b, c, s, g = cfg["brightness"], cfg["contrast"], cfg["saturation"], cfg["gamma"]
-        if b != 0.0 or c != 1.0 or s != 1.0 or g != 1.0:
-            color_filter = f"eq=brightness={b:.2f}:contrast={c:.2f}:saturation={s:.2f}:gamma={g:.2f}"
+    color_filter = color_filter_of(cfg)
 
     if color_filter:
         if cuda_frames:
@@ -466,6 +560,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.last_video_dir = ""
         self.last_sub_dir = ""
         self.output_dir = ctk.StringVar(value="")
+        self.ffmpeg_dir = ctk.StringVar(value="")   # kullanicinin elle gosterdigi klasor
         self.name_with_cq = ctk.BooleanVar(value=True)
         self.trim_start = ctk.StringVar(value="")
         self.trim_end = ctk.StringVar(value="")
@@ -483,18 +578,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.val_gamma.trace_add("write", self._update_color_labels)
 
         # --- FFmpeg Kontrolü ---
-        # find_tool ya tam yol ya da cozulememisse duz ad dondurur; ikisini de
-        # kapsamak icin shutil.which kullaniliyor (tam yolu da dogrular).
-        self.ffmpeg_hazir = bool(shutil.which(FFMPEG_BIN)) and bool(shutil.which(FFPROBE_BIN))
-        if not self.ffmpeg_hazir:
-            messagebox.showerror(
-                "FFmpeg Bulunamadı",
-                "Bu program çalışmak için FFmpeg ve FFprobe'a ihtiyaç duyar.\n\n"
-                "İki seçenek:\n"
-                "1) ffmpeg.exe ve ffprobe.exe dosyalarını bu programın yanına "
-                "(veya yanındaki ffmpeg\\bin klasörüne) kopyalayın — taşınabilir kullanım.\n"
-                "2) FFmpeg'i kurup PATH'e ekleyin:\nhttps://ffmpeg.org/download.html"
-            )
+        # FFmpeg kontrolu __init__ SONUNDA yapilir: kayitli ffmpeg klasoru
+        # ayarlardan yuklendikten sonra karar verilmeli.
+        self.ffmpeg_hazir = False
 
         try:
             ikon_yolu = self.resource_path("icon.ico")
@@ -533,6 +619,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         ctk.CTkButton(frame_out, text="Gözat", width=100, command=self.select_output_dir).pack(side="left")
         ctk.CTkCheckBox(inner_files, text="Dosya adına CQ ekle",
                         variable=self.name_with_cq).grid(row=3, column=1, padx=10, pady=(0, 10), sticky="w")
+        self.btn_ffmpeg = ctk.CTkButton(inner_files, text="⚙️ FFmpeg Yolu", width=100,
+                                        fg_color="#555555", hover_color="#444444",
+                                        command=self.select_ffmpeg_dir)
+        self.btn_ffmpeg.grid(row=3, column=2, padx=10, pady=(0, 10))
 
         # (Sürükle-bırak kurulumu log kutusu oluştuktan sonra yapılır - __init__ sonu)
 
@@ -681,10 +771,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.load_settings()
         self._refresh_queue_view()
 
-        # Hangi FFmpeg'in kullanıldığı görünür olsun: taşınabilir dağıtımda
-        # yanındaki kopya mı yoksa sistemdeki mi devrede, tek bakışta anlaşılır.
-        if self.ffmpeg_hazir:
-            self.log(f"🔧 FFmpeg: {FFMPEG_BIN}")
+        # FFmpeg durumu: ayarlardaki klasör yüklendikten SONRA karara bağlanır.
+        # Bulunamazsa kullanıcıya doğrudan klasör seçme seçeneği sunulur.
+        self.check_ffmpeg()
 
     # =======================================================
     # UI: RENK AYARLARI FONKSİYONLARI
@@ -1343,6 +1432,71 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             self.output_dir.set(yol)
             self.log(f"📂 Çıkış klasörü: {yol}")
 
+    # =======================================================
+    # FFMPEG KONUMU
+    # =======================================================
+    def apply_ffmpeg_dir(self, klasor):
+        """
+        Verilen klasordeki ikilileri devreye almaya calisir.
+        (basarili_mi, mesaj) dondurur; dosyalarin varligi yetmez, GERCEKTEN
+        calistiklari '-version' ile dogrulanir (yanlis mimari, eksik DLL vb.).
+        """
+        onceki = (FFMPEG_BIN, FFPROBE_BIN)
+        ffmpeg_yolu, ffprobe_yolu = resolve_tools(klasor or None)
+        if tools_usable(ffmpeg_yolu, ffprobe_yolu):
+            self.ffmpeg_dir.set(klasor or "")
+            self.ffmpeg_hazir = True
+            return True, ffmpeg_yolu
+        # Geri al: bozuk bir secim mevcut calisan kurulumu bozmasin.
+        resolve_tools(self.ffmpeg_dir.get() or None)
+        if not tools_usable(*onceki):
+            self.ffmpeg_hazir = False
+        return False, ffmpeg_yolu
+
+    def select_ffmpeg_dir(self):
+        """Kullanicidan ffmpeg.exe/ffprobe.exe iceren klasoru secmesini ister."""
+        klasor = filedialog.askdirectory(
+            title="ffmpeg ve ffprobe dosyalarının bulunduğu klasörü seçin",
+            initialdir=self.ffmpeg_dir.get() or None)
+        if not klasor:
+            return
+        tamam, yol = self.apply_ffmpeg_dir(klasor)
+        if tamam:
+            self.log(f"✅ FFmpeg ayarlandı: {yol}")
+            messagebox.showinfo("FFmpeg Hazır", f"FFmpeg başarıyla ayarlandı:\n{yol}")
+            self.save_settings()
+        else:
+            messagebox.showerror(
+                "Geçersiz Klasör",
+                "Seçilen klasörde çalışan ffmpeg/ffprobe bulunamadı.\n\n"
+                "Klasörün içinde (veya altındaki bin klasöründe) "
+                f"{'ffmpeg.exe ve ffprobe.exe' if os.name == 'nt' else 'ffmpeg ve ffprobe'} "
+                "dosyaları olmalı."
+            )
+
+    def check_ffmpeg(self):
+        """
+        Acilista FFmpeg durumunu belirler. Bulunamazsa kullaniciya dogrudan
+        klasor secme secenegi sunulur (hata verip birakmak yerine).
+        """
+        self.ffmpeg_hazir = tools_usable(FFMPEG_BIN, FFPROBE_BIN)
+        if self.ffmpeg_hazir:
+            self.log(f"🔧 FFmpeg: {FFMPEG_BIN}")
+            return
+
+        self.log("❌ FFmpeg bulunamadı.")
+        cevap = messagebox.askyesno(
+            "FFmpeg Bulunamadı",
+            "Bu program çalışmak için FFmpeg ve FFprobe'a ihtiyaç duyar.\n"
+            "Sistemde otomatik olarak bulunamadı.\n\n"
+            "FFmpeg zaten bilgisayarınızda kuruluysa klasörünü şimdi "
+            "göstermek ister misiniz?\n\n"
+            "(Hayır derseniz: ffmpeg dosyalarını bu programın yanına kopyalayın "
+            "veya https://ffmpeg.org/download.html adresinden kurun.)"
+        )
+        if cevap:
+            self.select_ffmpeg_dir()
+
     def _refresh_all_cq_displays(self):
         """Ayarlar yuklendikten sonra CQ etiket/renklerini tazeler."""
         for fn in self.cq_refreshers.values():
@@ -1550,6 +1704,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "son_video_klasoru": self.last_video_dir,
             "son_altyazi_klasoru": self.last_sub_dir,
             "cikis_klasoru": self.output_dir.get(),
+            "ffmpeg_klasoru": self.ffmpeg_dir.get(),
             "ada_cq_ekle": self.name_with_cq.get(),
             "renk_profili": self.color_preset.get(),
             "parlaklik": self.val_brightness.get(),
@@ -1600,6 +1755,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         cikis = data.get("cikis_klasoru") or ""
         if cikis and os.path.isdir(cikis):
             self.output_dir.set(cikis)
+        ffmpeg_kl = data.get("ffmpeg_klasoru") or ""
+        if ffmpeg_kl and os.path.isdir(ffmpeg_kl):
+            self.ffmpeg_dir.set(ffmpeg_kl)
+            resolve_tools(ffmpeg_kl)
         ata(self.name_with_cq, data.get("ada_cq_ekle"))
         ata(self.color_preset, data.get("renk_profili"),
             ["Varsayılan (Devre Dışı)", "Karanlık Video Kurtarma", "Özel Ayarlar"])
@@ -1830,9 +1989,21 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             # Komut kurmak icin gereken, ancak ancak GERCEKTEN denenerek
             # ogrenilebilecek her sey burada toplanir; build_command bunlari
             # veri olarak alir ve kendisi hicbir olcum yapmaz (saf fonksiyon).
+            kaynak_pix = self.get_video_pix_fmt(input_file)
+            cuda_frames = self.can_use_cuda_frames(input_file) if cfg["is_pure_cuda"] else False
+
+            # 12-bit + renk filtresi: NVDEC kareyi cozebiliyor ama RAM'e
+            # indirilemiyor. Isi patlatmak yerine filtreleri CPU'ya aliyoruz.
+            if cuda_frames and color_filter_of(cfg) and not cuda_color_roundtrip_ok(kaynak_pix):
+                cuda_frames = False
+                self._thread_safe_log(
+                    f"⚠️ {kaynak_pix} kaynakta renk filtresi GPU belleğine indirilemiyor; "
+                    "filtreler CPU'da çalışacak (kodlama yine NVENC)."
+                )
+
             probes = {
-                "cuda_frames": self.can_use_cuda_frames(input_file) if cfg["is_pure_cuda"] else False,
-                "pix_fmt": self.get_video_pix_fmt(input_file),
+                "cuda_frames": cuda_frames,
+                "pix_fmt": kaynak_pix,
                 "sub_codecs": (self.get_subtitle_codecs(input_file)
                                if container == "mkv" and not cfg["sub_file"] else []),
                 "audio_copy_ok": (self.can_copy_audio(input_file, container)
