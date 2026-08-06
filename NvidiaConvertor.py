@@ -539,11 +539,15 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     def __init__(self):
         super().__init__()
         self.title("Nvidia Cuda Video Convertor - Ultimate Edition")
-        self.geometry("880x1180")
+        # Konum da belirtilir: Tk'nin varsayilan yerlesimi pencereyi ekranin
+        # ortasina koyup altini gorev cubugunun altinda birakiyordu.
+        _gen, _yuk = 900, self._uygun_yukseklik(1300)
+        self.geometry("%dx%d+%d+%d" % (
+            _gen, _yuk, max(0, (self.winfo_screenwidth() - _gen) // 2), 20))
         # Sabit boyut, kucuk ekranlarda pencerenin altini kesiyordu. Log alani
         # expand=True oldugu icin kucultmeyi o sogurur.
         self.resizable(True, True)
-        self.minsize(860, 680)
+        self.minsize(880, 560)
 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.current_process = None
@@ -591,8 +595,22 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.video_path = ctk.StringVar()
         self.sub_path = ctk.StringVar()
 
+        # --- KÖK YERLEŞİM ---
+        # Ayar kartları + sekmeler tek başına ~1200 px istiyor; bu 1080p bir
+        # ekrana sığmaz ve "Dönüştür" butonu pencerenin altında kalıyordu.
+        # Çözüm: ayarlar KAYDIRILABİLİR bir alana konur, buton ve log ise
+        # kendi grid satırlarında sabit durur; hangi ekran boyutunda olursa
+        # olsun ikisi de her zaman görünür.
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=6)              # ayarlar (kaydırılabilir)
+        self.grid_rowconfigure(1, weight=0)              # Dönüştür butonu
+        self.grid_rowconfigure(2, weight=1, minsize=170)  # log
+
+        self.ust_alan = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.ust_alan.grid(row=0, column=0, sticky="nsew")
+
         # 1. DOSYA SEÇİM ALANI
-        frame_files = self.create_card(self, "🎬 Medya Seçimi")
+        frame_files = self.create_card(self.ust_alan, "🎬 Medya Seçimi")
         frame_files.pack(fill="x", padx=15, pady=(10, 5))
 
         inner_files = ctk.CTkFrame(frame_files, fg_color="transparent")
@@ -627,7 +645,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # (Sürükle-bırak kurulumu log kutusu oluştuktan sonra yapılır - __init__ sonu)
 
         # 1.5. GÖRÜNTÜ VE RENK AYARLARI ALANI
-        frame_color = self.create_card(self, "🎨 Görüntü & Renk Ayarları (Tüm Sekmeler İçin)")
+        frame_color = self.create_card(self.ust_alan, "🎨 Görüntü & Renk Ayarları (Tüm Sekmeler İçin)")
         frame_color.pack(fill="x", padx=15, pady=(0, 5))
 
         inner_color = ctk.CTkFrame(frame_color, fg_color="transparent")
@@ -688,7 +706,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.lbl_gamma_val.grid(row=1, column=5, padx=5)
 
         # 2. SEKMELER
-        self.tabview = ctk.CTkTabview(self, command=self.on_tab_change)
+        self.tabview = ctk.CTkTabview(self.ust_alan, command=self.on_tab_change)
         self.tabview.pack(fill="x", padx=15, pady=5)
 
         self.tabs = {}
@@ -702,7 +720,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.tabview.set("⚡ SAF CUDA")
 
         # 2.5. KUYRUK
-        frame_queue = self.create_card(self, "📋 Dönüştürme Kuyruğu")
+        frame_queue = self.create_card(self.ust_alan, "📋 Dönüştürme Kuyruğu")
         frame_queue.pack(fill="x", padx=15, pady=(0, 5))
 
         queue_top = ctk.CTkFrame(frame_queue, fg_color="transparent")
@@ -717,7 +735,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         ctk.CTkButton(queue_top, text="🧹 Temizle", width=90, fg_color="#555555",
                       hover_color="#444444", command=self.clear_queue).pack(side="left", padx=3)
 
-        self.txt_queue = ctk.CTkTextbox(frame_queue, height=78, font=("Consolas", 11),
+        self.txt_queue = ctk.CTkTextbox(frame_queue, height=56, font=("Consolas", 11),
                                         fg_color="#1A1A1A", corner_radius=8)
         self.txt_queue.pack(fill="x", padx=10, pady=(0, 10))
         self.txt_queue.configure(state="disabled")
@@ -728,13 +746,13 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             font=("Arial", 16, "bold"), height=50, corner_radius=25,
             command=self.start_thread
         )
-        self.btn_start.pack(fill="x", padx=15, pady=10)
+        self.btn_start.grid(row=1, column=0, sticky="ew", padx=15, pady=10)
 
         self.on_tab_change()
 
         # 4. LOG VE İLERLEME EKRANI
         frame_log = self.create_card(self, "📟 FFmpeg Terminal ve Durum")
-        frame_log.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        frame_log.grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 15))
 
         frame_prog_controls = ctk.CTkFrame(frame_log, fg_color="transparent")
         frame_prog_controls.pack(fill="x", padx=10, pady=(5, 5))
@@ -994,6 +1012,28 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         ctk.CTkCheckBox(card, text="Kaynaktan büyütme yapma", variable=tab_vars["no_upscale"]).pack(anchor="w", padx=15, pady=5)
         ctk.CTkCheckBox(card, text="10-bit kodla (main10)", variable=tab_vars["ten_bit"]).pack(anchor="w", padx=15, pady=(5, 15))
         return card
+
+    def _uygun_yukseklik(self, istenen):
+        """
+        Pencere yuksekligini ekranin KULLANILABILIR alanina sigdirir.
+        Gorev cubugu hesaba katilmazsa pencerenin alti onun altinda kalir.
+        """
+        try:
+            if os.name == "nt":
+                import ctypes
+                from ctypes import wintypes
+                alan = wintypes.RECT()
+                # SPI_GETWORKAREA = 0x0030 -> gorev cubugu haric masaustu alani
+                if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(alan), 0):
+                    kullanilabilir = alan.bottom - alan.top
+                else:
+                    kullanilabilir = self.winfo_screenheight() - 80
+            else:
+                kullanilabilir = self.winfo_screenheight() - 80
+            # Pencere cercevesi + baslik cubugu icin pay birak
+            return max(560, min(istenen, kullanilabilir - 60))
+        except Exception:
+            return istenen
 
     def _tab_meta(self, is_pure_cuda, is_vp9, accent, supports_subs=True):
         """Sekme davranisini isim icinde metin aramak yerine veri olarak tasir."""
