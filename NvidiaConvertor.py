@@ -210,6 +210,9 @@ SUB_EXTS = ('.srt', '.ass', '.vtt')
 # her zaman gorunur kalir.
 LOG_SATIR_SAYISI = 3
 
+# Altyazi dugmesinin bos haldeki metni (secilince dosya adiyla degisir)
+SUB_BTN_BOS = "💬 Altyazı Ekle"
+
 
 def get_cq_range(codec, scale):
     codec_ranges = CQ_RANGES.get(codec, CQ_RANGES["hevc_nvenc"])
@@ -568,6 +571,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.cq_refreshers = {}      # sekme adi -> CQ etiketini tazeleyen callback
         self.last_video_dir = ""
         self.last_sub_dir = ""
+        # Cikti HER ZAMAN kaynak videonun yanina yazilir. Degisken korunuyor
+        # (_build_output_path genel kalsin diye) ama arayuzden ayarlanmiyor ve
+        # ayarlarda saklanmiyor.
         self.output_dir = ctk.StringVar(value="")
         self.ffmpeg_dir = ctk.StringVar(value="")   # kullanicinin elle gosterdigi klasor
         self.name_with_cq = ctk.BooleanVar(value=True)
@@ -621,31 +627,37 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         inner_files = ctk.CTkFrame(frame_files, fg_color="transparent")
         inner_files.pack(fill="x", padx=5, pady=5)
 
-        ctk.CTkLabel(inner_files, text="Video Dosyası:").grid(row=0, column=0, padx=15, pady=10, sticky="w")
-        self.entry_vid = ctk.CTkEntry(inner_files, textvariable=self.video_path, width=450, placeholder_text="Dönüştürülecek videoyu seçin veya sürükleyin...")
-        self.entry_vid.grid(row=0, column=1, padx=10, pady=10)
-        ctk.CTkButton(inner_files, text="Gözat", width=100, command=self.select_video).grid(row=0, column=2, padx=10)
+        inner_files.grid_columnconfigure(1, weight=1)
 
-        self.lbl_sub = ctk.CTkLabel(inner_files, text="Altyazı (Opsiyonel):")
-        self.lbl_sub.grid(row=1, column=0, padx=15, pady=(0, 15), sticky="w")
-        self.entry_sub = ctk.CTkEntry(inner_files, textvariable=self.sub_path, width=450, placeholder_text="Hardsub için SRT seçin...")
-        self.entry_sub.grid(row=1, column=1, padx=10, pady=(0, 15))
-        self.btn_sub = ctk.CTkButton(inner_files, text="Gözat", width=100, command=self.select_sub)
-        self.btn_sub.grid(row=1, column=2, padx=10, pady=(0, 15))
+        # --- SATIR 0: video + altyazi ---
+        # Altyazi icin ayri bir metin kutusu yok; secilen dosya dogrudan dugmenin
+        # uzerinde gorunur. Dugme yalnizca altyaziyi destekleyen sekmelerde cikar
+        # (bkz. on_tab_change / _tab_meta -> supports_subs).
+        ctk.CTkLabel(inner_files, text="Video Dosyası:").grid(row=0, column=0, padx=(15, 5), pady=10, sticky="w")
+        self.entry_vid = ctk.CTkEntry(inner_files, textvariable=self.video_path,
+                                      placeholder_text="Dönüştürülecek videoyu seçin veya sürükleyin...")
+        self.entry_vid.grid(row=0, column=1, padx=5, pady=10, sticky="ew")
+        ctk.CTkButton(inner_files, text="Gözat", width=90,
+                      command=self.select_video).grid(row=0, column=2, padx=5, pady=10)
 
-        # --- CIKIS KLASORU ---
-        ctk.CTkLabel(inner_files, text="Çıkış Klasörü:").grid(row=2, column=0, padx=15, pady=(0, 15), sticky="w")
-        ctk.CTkEntry(inner_files, textvariable=self.output_dir, width=450,
-                     placeholder_text="Boş bırakılırsa kaynak videonun yanına yazılır").grid(row=2, column=1, padx=10, pady=(0, 15))
-        frame_out = ctk.CTkFrame(inner_files, fg_color="transparent")
-        frame_out.grid(row=2, column=2, padx=10, pady=(0, 15), sticky="w")
-        ctk.CTkButton(frame_out, text="Gözat", width=100, command=self.select_output_dir).pack(side="left")
+        self.btn_sub = ctk.CTkButton(inner_files, text=SUB_BTN_BOS, width=170,
+                                     fg_color="#555555", hover_color="#444444",
+                                     command=self.select_sub)
+        self.btn_sub.grid(row=0, column=3, padx=(5, 0), pady=10)
+        self.btn_sub_temizle = ctk.CTkButton(inner_files, text="✕", width=28,
+                                             fg_color="#7a3030", hover_color="#5e2424",
+                                             command=self.clear_sub)
+        self.btn_sub_temizle.grid(row=0, column=4, padx=(4, 15), pady=10)
+        self.btn_sub_temizle.grid_remove()   # yalnizca altyazi secilince gorunur
+
+        # --- SATIR 1: kucuk secenekler ---
         ctk.CTkCheckBox(inner_files, text="Dosya adına CQ ekle",
-                        variable=self.name_with_cq).grid(row=3, column=1, padx=10, pady=(0, 10), sticky="w")
-        self.btn_ffmpeg = ctk.CTkButton(inner_files, text="⚙️ FFmpeg Yolu", width=100,
+                        variable=self.name_with_cq).grid(row=1, column=1, padx=5,
+                                                         pady=(0, 10), sticky="w")
+        self.btn_ffmpeg = ctk.CTkButton(inner_files, text="⚙️ FFmpeg Yolu", width=170,
                                         fg_color="#555555", hover_color="#444444",
                                         command=self.select_ffmpeg_dir)
-        self.btn_ffmpeg.grid(row=3, column=2, padx=10, pady=(0, 10))
+        self.btn_ffmpeg.grid(row=1, column=3, columnspan=2, padx=(5, 15), pady=(0, 10), sticky="e")
 
         # (Sürükle-bırak kurulumu log kutusu oluştuktan sonra yapılır - __init__ sonu)
 
@@ -1138,13 +1150,12 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         color, hover, text_color = tab_vars.get("accent", ("#1f538d", "#14375e", "white"))
 
         if tab_vars.get("supports_subs", True):
-            self.lbl_sub.grid()
-            self.entry_sub.grid()
             self.btn_sub.grid()
+            if self.sub_path.get():
+                self.btn_sub_temizle.grid()
         else:
-            self.lbl_sub.grid_remove()
-            self.entry_sub.grid_remove()
             self.btn_sub.grid_remove()
+            self.btn_sub_temizle.grid_remove()
 
         self.btn_start.configure(fg_color=color, hover_color=hover, text_color=text_color)
         self.tabview.configure(segmented_button_selected_color=color, segmented_button_selected_hover_color=hover)
@@ -1426,6 +1437,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         if path:
             self.last_sub_dir = os.path.dirname(path)
             self.sub_path.set(path)
+            self._refresh_sub_button()
             self.log(f"Altyazı Eklendi: {os.path.basename(path)}")
 
     # =======================================================
@@ -1524,12 +1536,29 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def select_output_dir(self):
-        yol = filedialog.askdirectory(title="Çıkış Klasörünü Seçin",
-                                      initialdir=self.output_dir.get() or self.last_video_dir or None)
+    def clear_sub(self):
+        """Secili altyaziyi kaldirir."""
+        if self.sub_path.get():
+            self.log(f"Altyazı kaldırıldı: {os.path.basename(self.sub_path.get())}")
+        self.sub_path.set("")
+        self._refresh_sub_button()
+
+    def _refresh_sub_button(self):
+        """
+        Altyazi dugmesi secili dosyayi kendi uzerinde gosterir (ayri bir metin
+        kutusu tutmamak icin). Secim varsa yanina temizleme dugmesi cikar.
+        """
+        yol = self.sub_path.get()
         if yol:
-            self.output_dir.set(yol)
-            self.log(f"📂 Çıkış klasörü: {yol}")
+            ad = os.path.basename(yol)
+            if len(ad) > 20:
+                ad = ad[:17] + "…"
+            self.btn_sub.configure(text=f"💬 {ad}", fg_color="#2fa572", hover_color="#1e6b4a")
+            if self.tabs.get(self.tabview.get(), {}).get("supports_subs", True):
+                self.btn_sub_temizle.grid()
+        else:
+            self.btn_sub.configure(text=SUB_BTN_BOS, fg_color="#555555", hover_color="#444444")
+            self.btn_sub_temizle.grid_remove()
 
     # =======================================================
     # FFMPEG KONUMU
@@ -1802,7 +1831,6 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "aktif_sekme": self.tabview.get(),
             "son_video_klasoru": self.last_video_dir,
             "son_altyazi_klasoru": self.last_sub_dir,
-            "cikis_klasoru": self.output_dir.get(),
             "ffmpeg_klasoru": self.ffmpeg_dir.get(),
             "ada_cq_ekle": self.name_with_cq.get(),
             "renk_profili": self.color_preset.get(),
@@ -1851,9 +1879,6 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         self.last_video_dir = data.get("son_video_klasoru") or ""
         self.last_sub_dir = data.get("son_altyazi_klasoru") or ""
-        cikis = data.get("cikis_klasoru") or ""
-        if cikis and os.path.isdir(cikis):
-            self.output_dir.set(cikis)
         ffmpeg_kl = data.get("ffmpeg_klasoru") or ""
         if ffmpeg_kl and os.path.isdir(ffmpeg_kl):
             self.ffmpeg_dir.set(ffmpeg_kl)
