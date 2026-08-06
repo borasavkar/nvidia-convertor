@@ -649,7 +649,29 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         # (Sürükle-bırak kurulumu log kutusu oluştuktan sonra yapılır - __init__ sonu)
 
-        # 1.5. GÖRÜNTÜ VE RENK AYARLARI ALANI
+        # 1.5. KUYRUK (medya seçiminin hemen altında)
+        frame_queue = self.create_card(self.ust_alan, "📋 Dönüştürme Kuyruğu")
+        frame_queue.pack(fill="x", padx=15, pady=(0, 5))
+
+        queue_top = ctk.CTkFrame(frame_queue, fg_color="transparent")
+        queue_top.pack(fill="x", padx=10, pady=(0, 5))
+        self.lbl_queue = ctk.CTkLabel(queue_top, text="Kuyruk boş — 'Dönüştür' mevcut ayarları hemen çalıştırır.",
+                                      font=("Arial", 11), text_color="#AAAAAA", anchor="w")
+        self.lbl_queue.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(queue_top, text="➕ Kuyruğa Ekle", width=130,
+                      command=self.add_to_queue).pack(side="left", padx=3)
+        ctk.CTkButton(queue_top, text="➖ Sondakini Sil", width=120, fg_color="#555555",
+                      hover_color="#444444", command=self.remove_last_from_queue).pack(side="left", padx=3)
+        ctk.CTkButton(queue_top, text="🧹 Temizle", width=90, fg_color="#555555",
+                      hover_color="#444444", command=self.clear_queue).pack(side="left", padx=3)
+
+        self.txt_queue = ctk.CTkTextbox(frame_queue, height=56, font=("Consolas", 11),
+                                        fg_color="#1A1A1A", corner_radius=8)
+        self.txt_queue.pack(fill="x", padx=10, pady=(0, 10))
+        self.txt_queue.configure(state="disabled")
+
+
+        # 2. GÖRÜNTÜ VE RENK AYARLARI ALANI
         frame_color = self.create_card(self.ust_alan, "🎨 Görüntü & Renk Ayarları (Tüm Sekmeler İçin)")
         frame_color.pack(fill="x", padx=15, pady=(0, 5))
 
@@ -710,7 +732,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.lbl_gamma_val = ctk.CTkLabel(self.frame_sliders, text="1.00", width=30)
         self.lbl_gamma_val.grid(row=1, column=5, padx=5)
 
-        # 2. SEKMELER
+        # 3. SEKMELER
         self.tabview = ctk.CTkTabview(self.ust_alan, command=self.on_tab_change)
         self.tabview.pack(fill="x", padx=15, pady=5)
 
@@ -724,28 +746,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         self.tabview.set("⚡ SAF CUDA")
 
-        # 2.5. KUYRUK
-        frame_queue = self.create_card(self.ust_alan, "📋 Dönüştürme Kuyruğu")
-        frame_queue.pack(fill="x", padx=15, pady=(0, 5))
-
-        queue_top = ctk.CTkFrame(frame_queue, fg_color="transparent")
-        queue_top.pack(fill="x", padx=10, pady=(0, 5))
-        self.lbl_queue = ctk.CTkLabel(queue_top, text="Kuyruk boş — 'Dönüştür' mevcut ayarları hemen çalıştırır.",
-                                      font=("Arial", 11), text_color="#AAAAAA", anchor="w")
-        self.lbl_queue.pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(queue_top, text="➕ Kuyruğa Ekle", width=130,
-                      command=self.add_to_queue).pack(side="left", padx=3)
-        ctk.CTkButton(queue_top, text="➖ Sondakini Sil", width=120, fg_color="#555555",
-                      hover_color="#444444", command=self.remove_last_from_queue).pack(side="left", padx=3)
-        ctk.CTkButton(queue_top, text="🧹 Temizle", width=90, fg_color="#555555",
-                      hover_color="#444444", command=self.clear_queue).pack(side="left", padx=3)
-
-        self.txt_queue = ctk.CTkTextbox(frame_queue, height=56, font=("Consolas", 11),
-                                        fg_color="#1A1A1A", corner_radius=8)
-        self.txt_queue.pack(fill="x", padx=10, pady=(0, 10))
-        self.txt_queue.configure(state="disabled")
-
-        # 3. BAŞLAT BUTONU
+        # 4. BAŞLAT BUTONU
         self.btn_start = ctk.CTkButton(
             self, text="🚀 SEÇİLİ SEKMEYE GÖRE DÖNÜŞTÜR",
             font=("Arial", 16, "bold"), height=50, corner_radius=25,
@@ -755,7 +756,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         self.on_tab_change()
 
-        # 4. LOG VE İLERLEME EKRANI
+        # 5. LOG VE İLERLEME EKRANI
         frame_log = self.create_card(self, "📟 FFmpeg Terminal ve Durum")
         frame_log.grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 15))
 
