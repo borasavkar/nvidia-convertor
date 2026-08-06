@@ -2066,6 +2066,37 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             self.job_queue.pop(0)
             self._refresh_queue_view()
 
+    def _mark_broken_output(self, output_file):
+        """
+        Basarisiz bir isin geride biraktigi yarim/bos dosyayi ".bozuk" ekiyle
+        isaretler ve yeni adi dondurur (dosya yoksa None).
+
+        Neden silmiyoruz: kullanici bazen yarim ciktiya bakmak isteyebilir.
+        Ama adi oldugu gibi birakmak tehlikeli - klasorde normal bir cikti gibi
+        gorunuyor ve "donusmus" saniliyordu (tipik olarak 0 bayt oluyor).
+        """
+        try:
+            if not os.path.isfile(output_file):
+                return None
+            boyut = os.path.getsize(output_file)
+            hedef = output_file + ".bozuk"
+            # Windows'ta cikan surecin tutamaci bir an gec birakilabiliyor
+            for deneme in range(4):
+                try:
+                    os.replace(output_file, hedef)   # varsa eskisini ezer
+                    self._thread_safe_log(
+                        f"🚫 Yarım kalan çıktı işaretlendi ({boyut} bayt): "
+                        f"{os.path.basename(hedef)}"
+                    )
+                    return hedef
+                except OSError:
+                    if deneme == 3:
+                        raise
+                    time.sleep(0.5)
+        except Exception as e:
+            self._thread_safe_log(f"⚠️ Bozuk çıktı işaretlenemedi: {e}")
+        return None
+
     def run_ffmpeg(self, cfg, son_is=True):
         """
         Worker thread. DIKKAT: Bu metot hicbir Tk degiskenine/widget'ina DOKUNMAZ.
@@ -2223,7 +2254,13 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 for tail_line in self._ffmpeg_tail:
                     self._thread_safe_log(tail_line)
                 self._thread_safe_log("=" * 60)
-                self.after(0, messagebox.showerror, "Hata", "FFmpeg bir hata döndürdü. Detaylar için siyah log ekranına bakın.")
+
+                bozuk_ad = self._mark_broken_output(output_file)
+                ek_mesaj = ""
+                if bozuk_ad:
+                    ek_mesaj = f"\n\nYarım kalan çıktı şu adla işaretlendi:\n{os.path.basename(bozuk_ad)}"
+                self.after(0, messagebox.showerror, "Hata",
+                           "FFmpeg bir hata döndürdü. Detaylar için siyah log ekranına bakın." + ek_mesaj)
 
         except Exception as e:
             self._thread_safe_log(f"❌ BEKLENMEYEN HATA: {str(e)}")
