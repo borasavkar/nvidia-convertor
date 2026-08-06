@@ -18,3 +18,6 @@ desktop.ini
 
 # Test/gecici medya
 *.tmp
+
+# Pakete dahil edilecek FFmpeg ikilileri (surum kontrolune girmez)
+ffmpeg/

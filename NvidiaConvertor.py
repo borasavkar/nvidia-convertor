@@ -19,6 +19,35 @@ SETTINGS_PATH = os.path.join(
     "NvidiaConvertor", "settings.json"
 )
 
+
+def find_tool(name):
+    """
+    ffmpeg/ffprobe konumunu bulur.
+
+    Once UYGULAMANIN YANINDA aranir; boylece tasinabilir (portable) dagitimda
+    ffmpeg.exe'yi exe ile ayni klasore (ya da ffmpeg\\bin altina) koymak yeterli
+    olur ve kullanicinin sisteme ffmpeg kurmasi gerekmez.
+    Bulunamazsa PATH'e dusulur (gelistirme ve klasik kurulum senaryosu).
+    """
+    exe = name + (".exe" if os.name == "nt" else "")
+    kokler = []
+    if getattr(sys, "frozen", False):
+        kokler.append(os.path.dirname(sys.executable))        # exe'nin yani
+        if getattr(sys, "_MEIPASS", None):
+            kokler.append(sys._MEIPASS)                       # onefile paket ici
+    else:
+        kokler.append(os.path.dirname(os.path.abspath(__file__)))
+    for kok in kokler:
+        for alt in ("", "ffmpeg", os.path.join("ffmpeg", "bin"), "bin"):
+            aday = os.path.join(kok, alt, exe)
+            if os.path.isfile(aday):
+                return aday
+    return shutil.which(name) or name
+
+
+FFMPEG_BIN = find_tool("ffmpeg")
+FFPROBE_BIN = find_tool("ffprobe")
+
 try:
     import psutil
     HAS_PSUTIL = True
@@ -454,11 +483,17 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.val_gamma.trace_add("write", self._update_color_labels)
 
         # --- FFmpeg Kontrolü ---
-        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        # find_tool ya tam yol ya da cozulememisse duz ad dondurur; ikisini de
+        # kapsamak icin shutil.which kullaniliyor (tam yolu da dogrular).
+        self.ffmpeg_hazir = bool(shutil.which(FFMPEG_BIN)) and bool(shutil.which(FFPROBE_BIN))
+        if not self.ffmpeg_hazir:
             messagebox.showerror(
                 "FFmpeg Bulunamadı",
                 "Bu program çalışmak için FFmpeg ve FFprobe'a ihtiyaç duyar.\n\n"
-                "Lütfen FFmpeg'i indirip PATH'e ekleyin:\nhttps://ffmpeg.org/download.html"
+                "İki seçenek:\n"
+                "1) ffmpeg.exe ve ffprobe.exe dosyalarını bu programın yanına "
+                "(veya yanındaki ffmpeg\\bin klasörüne) kopyalayın — taşınabilir kullanım.\n"
+                "2) FFmpeg'i kurup PATH'e ekleyin:\nhttps://ffmpeg.org/download.html"
             )
 
         try:
@@ -645,6 +680,11 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # --- KAYITLI AYARLAR (tüm widget'lar oluştuktan sonra) ---
         self.load_settings()
         self._refresh_queue_view()
+
+        # Hangi FFmpeg'in kullanıldığı görünür olsun: taşınabilir dağıtımda
+        # yanındaki kopya mı yoksa sistemdeki mi devrede, tek bakışta anlaşılır.
+        if self.ffmpeg_hazir:
+            self.log(f"🔧 FFmpeg: {FFMPEG_BIN}")
 
     # =======================================================
     # UI: RENK AYARLARI FONKSİYONLARI
@@ -1278,6 +1318,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                     zaman = sure / 2 if sure > 0 else 0.0
                 png = os.path.join(tempfile.gettempdir(), "nvconv_onizleme.png")
                 cmd = build_preview_command(cfg, probes, png, zaman)
+                cmd[0] = FFMPEG_BIN
                 sonuc = subprocess.run(
                     cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                     errors="replace", timeout=120,
@@ -1341,7 +1382,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     def get_subtitle_codecs(self, filepath):
         """Kaynaktaki altyazi izlerinin codec adlarini dondurur (yoksa bos liste)."""
         try:
-            cmd = ['ffprobe', '-v', 'error', '-select_streams', 's',
+            cmd = [FFPROBE_BIN, '-v', 'error', '-select_streams', 's',
                    '-show_entries', 'stream=codec_name',
                    '-of', 'default=noprint_wrappers=1:nokey=1', filepath]
             result = subprocess.run(
@@ -1355,7 +1396,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     def get_video_pix_fmt(self, filepath):
         """Kaynak videonun piksel formatini dondurur (bulunamazsa '')."""
         try:
-            cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+            cmd = [FFPROBE_BIN, '-v', 'error', '-select_streams', 'v:0',
                    '-show_entries', 'stream=pix_fmt',
                    '-of', 'default=noprint_wrappers=1:nokey=1', filepath]
             result = subprocess.run(
@@ -1370,7 +1411,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     def get_video_resolution(self, filepath):
         """Kaynak videonun (genislik, yukseklik) degerini dondurur; okunamazsa (0, 0)."""
         try:
-            cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+            cmd = [FFPROBE_BIN, '-v', 'error', '-select_streams', 'v:0',
                    '-show_entries', 'stream=width,height',
                    '-of', 'default=noprint_wrappers=1:nokey=1', filepath]
             result = subprocess.run(
@@ -1392,7 +1433,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             os.environ.get("TEMP", os.path.dirname(filepath)),
             "_nvconv_actest." + container
         )
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", filepath,
+        cmd = [FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-i", filepath,
                "-map", "0:a:0", "-c:a", "copy", "-t", "0.5", "-y", tmp]
         try:
             result = subprocess.run(
@@ -1419,7 +1460,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         alamayip "Function not implemented" ile isi komple durdurur.
         Maliyet ~0.2 sn; dakikalarca surecek bir kodlamanin oncesinde ihmal edilebilir.
         """
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+        cmd = [FFMPEG_BIN, "-hide_banner", "-loglevel", "error",
                "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
                "-i", filepath, "-frames:v", "1",
                # 256: NVENC'in minimum kare boyutunun uzerinde olmali
@@ -1444,7 +1485,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         Erken kareleri hasarli dosyalarda bu birebir yasaniyordu.
         """
         def _probe(entries, select=None):
-            cmd = ['ffprobe', '-v', 'error']
+            cmd = [FFPROBE_BIN, '-v', 'error']
             if select:
                 cmd += ['-select_streams', select]
             cmd += ['-show_entries', entries,
@@ -1807,6 +1848,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             self._thread_safe_log(f"⚙️ ÇALIŞTIRILAN FFmpeg KOMUTU:\n{' '.join(cmd)}")
             self._thread_safe_log("=" * 60)
 
+            # Saf builder mantiksal "ffmpeg" adini uretir (log okunakli kalsin);
+            # calistirmadan hemen once gercek yola cevrilir.
+            cmd[0] = FFMPEG_BIN
             self.current_process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,   # iptalde 'q' gonderebilmek icin (bkz. _graceful_stop)
