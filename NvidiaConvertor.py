@@ -776,7 +776,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.btn_delete = ctk.CTkButton(frame_prog_controls, text="🗑️ Sil", width=60, state="disabled", fg_color="#FF0000", hover_color="#CC0000", command=self.delete_process)
         self.btn_delete.pack(side="left", padx=3)
 
-        self.txt_log = ctk.CTkTextbox(frame_log, font=("Consolas", 11), text_color="#00FF00", fg_color="#000000", corner_radius=10)
+        self.txt_log = ctk.CTkTextbox(frame_log, height=130, font=("Consolas", 11), text_color="#00FF00", fg_color="#000000", corner_radius=10)
         self.txt_log.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self.txt_log.configure(state="disabled")
 
@@ -1002,15 +1002,43 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         slider.pack(fill="x", padx=15, pady=(0, 15))
         return lbl_title, lbl_status, slider
 
-    def _create_toggles_card(self, parent, tab_vars, title, bwdif_text):
+    def _add_toggle(self, parent, text, variable, aciklama, son=False):
+        """Bir onay kutusu ve hemen altina ne ise yaradigini anlatan kisa not."""
+        ctk.CTkCheckBox(parent, text=text, variable=variable).pack(anchor="w", padx=15, pady=(6, 0))
+        # height verilmezse CTkLabel tek satir icin bile 28 px yer kapliyor;
+        # 6 salterde bu ~70 px gereksiz kaydirma demek.
+        ctk.CTkLabel(parent, text=aciklama, font=("Arial", 10, "italic"),
+                     text_color="#8A8A8A", justify="left", anchor="w",
+                     height=16, wraplength=430).pack(anchor="w", padx=(40, 12),
+                                                     pady=(0, 10 if son else 1))
+
+    def _create_toggles_card(self, parent, tab_vars, title, bwdif_text, cuda=False):
         card = self.create_card(parent, title)
         card.pack(fill="x", pady=10)
-        ctk.CTkCheckBox(card, text=bwdif_text, variable=tab_vars["bwdif"]).pack(anchor="w", padx=15, pady=5)
-        ctk.CTkCheckBox(card, text="Zamansal AQ (temporal-aq)", variable=tab_vars["temporal_aq"]).pack(anchor="w", padx=15, pady=5)
-        ctk.CTkCheckBox(card, text="Çift Geçiş (-multipass 2)", variable=tab_vars["multipass"]).pack(anchor="w", padx=15, pady=5)
-        ctk.CTkCheckBox(card, text="Uzun GOP (-g 300)", variable=tab_vars["long_gop"]).pack(anchor="w", padx=15, pady=5)
-        ctk.CTkCheckBox(card, text="Kaynaktan büyütme yapma", variable=tab_vars["no_upscale"]).pack(anchor="w", padx=15, pady=5)
-        ctk.CTkCheckBox(card, text="10-bit kodla (main10)", variable=tab_vars["ten_bit"]).pack(anchor="w", padx=15, pady=(5, 15))
+
+        self._add_toggle(
+            card, bwdif_text, tab_vars["bwdif"],
+            ("Taraklı (interlaced) görüntüyü düzleştirir; GPU'da çalışır."
+             if cuda else
+             "Eski TV/DVD kayıtlarındaki yatay tarak izlerini giderir.")
+            + " Kaynak taraklı değilse gereksizdir.")
+        self._add_toggle(
+            card, "Zamansal AQ (temporal-aq)", tab_vars["temporal_aq"],
+            "Bit bütçesini hareketli sahnelere kaydırır. Genelde açık kalmalı.")
+        self._add_toggle(
+            card, "Çift Geçiş (-multipass 2)", tab_vars["multipass"],
+            "İki geçişte kodlar: daha yavaş ama zor sahnelerde kalite daha kararlı.")
+        self._add_toggle(
+            card, "Uzun GOP (-g 300)", tab_vars["long_gop"],
+            "Anahtar kareleri seyrekleştirir: dosya küçülür, ileri/geri sarma kabalaşır.")
+        self._add_toggle(
+            card, "Kaynaktan büyütme yapma", tab_vars["no_upscale"],
+            "Hedef çözünürlük kaynaktan büyükse ölçekleme atlanır; "
+            "büyütmek kalite katmaz, sadece dosyayı şişirir.")
+        self._add_toggle(
+            card, "10-bit kodla (main10)", tab_vars["ten_bit"],
+            "8-bit kaynakta bile renk geçişlerindeki bantlanmayı azaltır. "
+            "Kapatmak eski cihazlarla uyumu artırır.", son=True)
         return card
 
     def _uygun_yukseklik(self, istenen):
@@ -1204,7 +1232,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         ctk.CTkLabel(card_res, text="-threads (CPU Çekirdek Kullanımı):").pack(anchor="w", padx=15)
         ReadOnlyComboBox(card_res, variable=tab_vars["vp9_threads"], values=["Auto", "2", "4", "8", "16", "32"]).pack(fill="x", padx=15, pady=(0, 10))
-        ctk.CTkCheckBox(card_res, text="Kaynaktan büyütme yapma", variable=tab_vars["no_upscale"]).pack(anchor="w", padx=15, pady=(0, 15))
+        self._add_toggle(card_res, "Kaynaktan büyütme yapma", tab_vars["no_upscale"],
+                         "Hedef çözünürlük kaynaktan büyükse ölçekleme atlanır; "
+                         "büyütmek kalite katmaz, sadece dosyayı şişirir.", son=True)
 
         on_cq_change_vp9()
         self.cq_refreshers[tab_name] = on_cq_change_vp9
@@ -1347,7 +1377,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self._create_metadata_card(col_right, tab_vars)
 
         self._create_toggles_card(col_right, tab_vars, "🛠️ CUDA Kontrol Şalterleri",
-                                  "Donanımsal Tarak Giderici (yadif_cuda)")
+                                  "Donanımsal Tarak Giderici (yadif_cuda)", cuda=True)
 
     def select_video(self):
         path = filedialog.askopenfilename(
