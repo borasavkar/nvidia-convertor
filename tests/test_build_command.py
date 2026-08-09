@@ -59,7 +59,28 @@ def cfg(**kw):
 
 def probes(**kw):
     base = {"cuda_frames": False, "pix_fmt": "yuv420p",
-            "sub_codecs": [], "audio_copy_ok": False}
+            "sub_codecs": [], "audio_copy_ok": False,
+            "sub_charenc": "", "sub_needs_transcode": False}
+    base.update(kw)
+    return base
+
+
+def remux_cfg(**kw):
+    """Sadece-altyazi modu icin is tanimi (kodlayici ayarlari anlamsizdir)."""
+    base = cfg(
+        tab_name="💬 SADECE ALTYAZI",
+        is_remux=True,
+        codec_v="copy",
+        container="mkv",
+        sub_file=r"C:\alt\film.srt",
+        cq_val="-",
+        preset="",
+        sub_lang="tur",
+        sub_lang_label="Türkçe",
+        sub_default=True,
+        keep_embedded_subs=True,
+        output_file=r"C:\video\cikti.mkv",
+    )
     base.update(kw)
     return base
 
@@ -71,6 +92,17 @@ def vf_of(cmd):
 
 def val_of(cmd, flag):
     return cmd[cmd.index(flag) + 1] if flag in cmd else None
+
+
+def sub_codecs_of(cmd):
+    """Komuttaki -c:s:N bayraklarini {indeks: codec} olarak dondurur."""
+    return {int(a.split(":")[2]): cmd[i + 1]
+            for i, a in enumerate(cmd) if a.startswith("-c:s:")}
+
+
+def maps_of(cmd):
+    """Komuttaki tum -map degerlerini SIRAYLA dondurur."""
+    return [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map"]
 
 
 # ---------------------------------------------------------------- temel yapi
@@ -462,3 +494,317 @@ def test_12bit_cpu_yolunda_renk_filtresi_sarmalanmaz():
         probes(cuda_frames=False, pix_fmt="yuv420p12le"))
     assert "hwdownload" not in vf_of(cmd)
     assert "eq=" in vf_of(cmd)
+
+
+# ================================================================
+# SADECE ALTYAZI EKLE (KODEK KORUNUR)
+# ================================================================
+# Buradaki beklentiler ffmpeg 9.0 uzerinde gercek dosyalarla olculdu;
+# ilgili olcumun ozeti her testin docstring'inde.
+
+def test_remux_video_ve_sesi_yeniden_kodlamaz():
+    """Modun tek varlik sebebi: hicbir kodlayici devreye girmemeli."""
+    cmd, _ = nv.build_command(remux_cfg(), probes())
+    assert val_of(cmd, "-c:v") == "copy"
+    assert val_of(cmd, "-c:a") == "copy"
+    for kodlayici_bayragi in ("-cq:v", "-crf", "-preset:v", "-b:a", "-vf",
+                              "-hwaccel", "-pix_fmt", "-profile:v", "-multipass"):
+        assert kodlayici_bayragi not in cmd, kodlayici_bayragi
+
+
+def test_remux_iki_girdi_alir_altyazi_ikincidir():
+    cmd, _ = nv.build_command(
+        remux_cfg(input_file=r"C:\v\a.mkv", sub_file=r"C:\s\b.srt"), probes())
+    girdiler = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-i"]
+    assert girdiler == [r"C:\v\a.mkv", r"C:\s\b.srt"]
+
+
+def test_remux_altyazi_yolu_argv_olarak_gecer_kacis_yok():
+    """Filtre grafigine girmedigi icin escape_filter_path UYGULANMAMALI."""
+    yol = r"C:\alt\[Grup] Dizi, 01 'ozel'.srt"
+    cmd, _ = nv.build_command(remux_cfg(sub_file=yol), probes())
+    assert yol in cmd
+    assert vf_of(cmd) is None
+
+
+def test_remux_utf8_altyazi_kopyalanir():
+    """Olculdu: UTF-8 srt matroska'ya bayt bayt kopyalanabiliyor."""
+    cmd, notes = nv.build_command(remux_cfg(), probes(sub_needs_transcode=False))
+    assert sub_codecs_of(cmd) == {0: "copy"}
+    assert "-sub_charenc" not in cmd
+    assert any("UTF-8" in n and "kopyalan" in n for n in notes)
+
+
+def test_remux_utf8_olmayan_altyazi_charenc_ile_cevrilir():
+    """
+    Olculdu: CP1254 bir srt "copy" ile gecirilirse matroska'ya UTF-8 olmayan
+    bayt girer (oynaticida bozuk karakter); charenc verilmeden "-c:s srt" ile
+    cevrilmeye kalkilirsa ffmpeg is'i 69 koduyla birakir.
+    """
+    cmd, notes = nv.build_command(
+        remux_cfg(), probes(sub_charenc="CP1254", sub_needs_transcode=True))
+    assert val_of(cmd, "-sub_charenc") == "CP1254"
+    assert sub_codecs_of(cmd) == {0: "srt"}
+    assert any("CP1254" in n for n in notes)
+
+
+def test_remux_charenc_altyazi_girdisinden_once_gelir():
+    """-sub_charenc girdi basina bir secenektir; -i'den sonra gelirse etkisiz."""
+    cmd, _ = nv.build_command(
+        remux_cfg(), probes(sub_charenc="CP1254", sub_needs_transcode=True))
+    girdi_indeksleri = [i for i, a in enumerate(cmd) if a == "-i"]
+    assert girdi_indeksleri[0] < cmd.index("-sub_charenc") < girdi_indeksleri[1]
+
+
+@pytest.mark.parametrize("uzanti,beklenen", [
+    (".srt", "srt"), (".vtt", "srt"), (".ass", "ass"), (".ssa", "ass"),
+])
+def test_remux_cevrim_gerekirse_stilli_altyazi_ass_kalir(uzanti, beklenen):
+    """Stilli altyaziyi srt'ye dusurmek renk/italik bilgisini siler."""
+    cmd, _ = nv.build_command(
+        remux_cfg(sub_file=r"C:\alt\film" + uzanti),
+        probes(sub_charenc="CP1254", sub_needs_transcode=True))
+    assert sub_codecs_of(cmd)[0] == beklenen
+
+
+def test_remux_mkv_gomulu_izleri_korur_ve_harici_sona_eklenir():
+    cmd, notes = nv.build_command(
+        remux_cfg(container="mkv"), probes(sub_codecs=["subrip", "ass"]))
+    assert maps_of(cmd) == ["0:V:0", "0:a?", "0:s:0", "0:s:1", "1:0", "0:t?"]
+    assert sub_codecs_of(cmd) == {0: "copy", 1: "copy", 2: "copy"}
+    assert any("2 altyazı izi de korunuyor" in n for n in notes)
+
+
+def test_remux_mkv_gomulu_mov_text_srt_ye_cevrilir():
+    """
+    Olculdu: mov_text matroska'ya kopyalanamaz -> "Could not write header
+    (incorrect codec parameters ?)". Iz iz codec vermek sart.
+    """
+    cmd, _ = nv.build_command(
+        remux_cfg(container="mkv"), probes(sub_codecs=["mov_text"]))
+    assert sub_codecs_of(cmd) == {0: "srt", 1: "copy"}
+
+
+def test_remux_mkv_resim_tabanli_izleri_kopyalar():
+    """MKV, PGS/VobSub izlerini sorunsuz tasir; atmaya gerek yok."""
+    cmd, notes = nv.build_command(
+        remux_cfg(container="mkv"), probes(sub_codecs=["hdmv_pgs_subtitle"]))
+    assert sub_codecs_of(cmd) == {0: "copy", 1: "copy"}
+    assert not any("ATLANDI" in n for n in notes)
+
+
+def test_remux_gomulu_izler_kapatilabilir():
+    cmd, _ = nv.build_command(
+        remux_cfg(keep_embedded_subs=False), probes(sub_codecs=["subrip", "ass"]))
+    assert maps_of(cmd) == ["0:V:0", "0:a?", "1:0", "0:t?"]
+    assert sub_codecs_of(cmd) == {0: "copy"}
+
+
+def test_remux_mp4_mov_text_kullanir_ve_faststart_ekler():
+    """Olculdu: MP4'e srt'yi "copy" ile yazmak 127 ile basarisiz oluyor."""
+    cmd, notes = nv.build_command(remux_cfg(container="mp4"), probes())
+    assert sub_codecs_of(cmd) == {0: "mov_text"}
+    assert val_of(cmd, "-movflags") == "+faststart"
+    assert any("mov_text" in n for n in notes)
+
+
+def test_remux_mp4_resim_tabanli_izleri_atlar_ve_uyarir():
+    """Resim altyazi metne cevrilemez; MP4 ciktida tasinamaz."""
+    cmd, notes = nv.build_command(
+        remux_cfg(container="mp4"),
+        probes(sub_codecs=["hdmv_pgs_subtitle", "subrip"]))
+    assert maps_of(cmd) == ["0:V:0", "0:a?", "0:s:1", "1:0"]
+    assert sub_codecs_of(cmd) == {0: "mov_text", 1: "mov_text"}
+    assert any("ATLANDI" in n and "MKV" in n for n in notes)
+
+
+def test_remux_mp4_gomulu_mov_text_bosuna_cevrilmez():
+    cmd, _ = nv.build_command(
+        remux_cfg(container="mp4"), probes(sub_codecs=["mov_text"]))
+    assert sub_codecs_of(cmd) == {0: "copy", 1: "mov_text"}
+
+
+def test_remux_ekler_yalnizca_mkvye_tasinir():
+    """ASS fontlari konteyner ekidir; MP4 ek tasiyamaz."""
+    mkv, _ = nv.build_command(remux_cfg(container="mkv"), probes())
+    mp4, _ = nv.build_command(remux_cfg(container="mp4"), probes())
+    assert "0:t?" in maps_of(mkv)
+    assert "0:t?" not in maps_of(mp4)
+
+
+def test_remux_bolumler_ilk_girdiden_alinir():
+    """Cok girdili komutta ffmpeg bolum kaynagini kendi seciyor."""
+    cmd, _ = nv.build_command(remux_cfg(), probes())
+    assert val_of(cmd, "-map_chapters") == "0"
+
+
+def test_remux_dil_ve_baslik_harici_izin_indeksine_yazilir():
+    cmd, _ = nv.build_command(
+        remux_cfg(sub_lang="tur", sub_lang_label="Türkçe"),
+        probes(sub_codecs=["subrip", "ass"]))
+    # gomulu 2 iz -> harici iz altyazi indeksi 2
+    assert "-metadata:s:s:2" in cmd
+    degerler = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-metadata:s:s:2"]
+    assert "language=tur" in degerler and "title=Türkçe" in degerler
+
+
+def test_remux_dil_belirtilmezse_etiket_yazilmaz():
+    cmd, _ = nv.build_command(remux_cfg(sub_lang="", sub_lang_label=""), probes())
+    assert not any(a.startswith("-metadata:s:s:") for a in cmd)
+
+
+def test_remux_varsayilan_isareti_eskisini_dusurur():
+    """
+    Iki iz birden 'default' kalirsa oynatici eskisini secer.
+
+    Eski izler "-default" ile dusurulur, duz "0" ile DEGIL: olculdu, "0" tum
+    bayrak maskesini siliyor ve forced isaretli bir iz forced'ini kaybediyor.
+    """
+    cmd, _ = nv.build_command(
+        remux_cfg(sub_default=True), probes(sub_codecs=["subrip", "ass"]))
+    assert val_of(cmd, "-disposition:s:2") == "default"
+    assert val_of(cmd, "-disposition:s:0") == "-default"
+    assert val_of(cmd, "-disposition:s:1") == "-default"
+
+
+def test_remux_varsayilan_kapaliysa_disposition_yok():
+    cmd, _ = nv.build_command(
+        remux_cfg(sub_default=False), probes(sub_codecs=["subrip"]))
+    assert not any(a.startswith("-disposition") for a in cmd)
+
+
+def test_remux_metadata_alanlari_calisir():
+    """Kopyalama modunda da konteyner metadata'si yazilabilir."""
+    cmd, _ = nv.build_command(remux_cfg(meta_title="Film"), probes())
+    assert "title=Film" in cmd
+
+
+def test_remux_ciktiyla_biter():
+    cmd, _ = nv.build_command(remux_cfg(output_file=r"C:\v\x.mkv"), probes())
+    assert cmd[0] == "ffmpeg"
+    assert cmd[-2:] == ["-y", r"C:\v\x.mkv"]
+
+
+def test_remux_altyazi_gomulmez():
+    """Altyazi iz olarak eklenir; hardsub filtresi girmemeli."""
+    cmd, _ = nv.build_command(remux_cfg(), probes())
+    assert "-vf" not in cmd
+    vf, _ = nv.build_filters(remux_cfg(), probes())
+    assert not any("subtitles=" in f for f in vf)
+
+
+def test_remux_onizlemede_de_altyazi_yakilmaz():
+    """Onizleme ciktiyi temsil etmeli: remux'ta altyazi yanmaz."""
+    cmd = nv.build_preview_command(remux_cfg(), probes(), "x.png")
+    assert vf_of(cmd) is None or "subtitles=" not in vf_of(cmd)
+
+
+def test_remux_hicbir_filtre_calismaz():
+    """
+    Kare dokunulmadan kopyalanir. Onizleme de bunu gostermeli: renk filtresi
+    onizlemeye sizarsa kullanici ciktida OLMAYAN bir duzeltme gorur.
+    """
+    vf, notlar = nv.build_filters(
+        remux_cfg(color_preset="Karanlık Video Kurtarma", scale="720p",
+                  use_bwdif=True),
+        probes(cuda_frames=True))
+    assert vf == [] and notlar == []
+    cmd = nv.build_preview_command(
+        remux_cfg(color_preset="Karanlık Video Kurtarma"), probes(), "x.png")
+    assert vf_of(cmd) is None
+
+
+def test_remux_uygulanmayan_ayarlar_icin_uyarir():
+    """Olcekleme/renk sessizce yutulmamali; kullaniciya soylenmeli."""
+    _, notes = nv.build_command(
+        remux_cfg(scale="720p", color_preset="Karanlık Video Kurtarma"), probes())
+    assert any("UYGULANMADI" in n for n in notes)
+
+
+def test_remux_ayar_yoksa_gereksiz_uyari_verilmez():
+    _, notes = nv.build_command(remux_cfg(), probes())
+    assert not any("UYGULANMADI" in n for n in notes)
+
+
+def test_remux_kodlama_yapilmadigi_bildirilir():
+    _, notes = nv.build_command(remux_cfg(), probes())
+    assert any("yeniden" in n and "kodlanmıyor" in n for n in notes)
+
+
+# ---------------------------------------------------------------- kodlama olcumu
+@pytest.mark.parametrize("icerik,kodlama,beklenen", [
+    ("Merhaba dünya", "utf-8", ("", False)),          # temiz UTF-8 -> kopyala
+    ("Merhaba dünya", "utf-8-sig", ("", False)),      # BOM'u cozucu kendi atar
+    ("Merhaba dünya", "cp1254", ("CP1254", True)),    # 8-bit -> cevir
+    ("Merhaba dünya", "utf-16", ("", True)),          # BOM'u ffmpeg cevirir
+    ("Plain ascii", "ascii", ("", False)),            # ASCII gecerli UTF-8'dir
+])
+def test_detect_sub_charenc(tmp_path, icerik, kodlama, beklenen):
+    yol = tmp_path / "a.srt"
+    yol.write_text(icerik, encoding=kodlama)
+    assert nv.detect_sub_charenc(str(yol)) == beklenen
+
+
+def test_detect_sub_charenc_zorlama_olcumu_ezer():
+    """Kullanici elle sectiyse dosya UTF-8 olsa bile cevrim yapilir."""
+    assert nv.detect_sub_charenc(r"C:\yok.srt", "ISO-8859-9") == ("ISO-8859-9", True)
+
+
+def test_detect_sub_charenc_okunamayan_dosyada_varsayim_uretmez():
+    """Sessizce yanlis kodlama zorlamak yerine ffmpeg kendi hatasini versin."""
+    assert nv.detect_sub_charenc(r"C:\olmayan\dosya.srt") == ("", False)
+
+
+def test_detect_sub_charenc_utf16_de_charenc_vermez(tmp_path):
+    """
+    Olculdu: "-sub_charenc UTF-16" cift cevrime yol acip "Unable to recode
+    subtitle event" veriyor (cozucu BOM'u zaten kendi ceviriyor); "copy" ise
+    UTF-16 baytlarini oldugu gibi gecirip okunamaz bir iz birakiyor.
+    Dogru davranis: charenc VERMEDEN cevirmek.
+
+    NOT: BOM'SUZ UTF-16 bilerek kapsam disi. Olculdu: ffmpeg boyle bir dosyayi
+    hangi -sub_charenc verilirse verilsin ACAMIYOR ("Error opening input:
+    Invalid data found"), yani tespit etsek de sonuc degismezdi.
+    """
+    yol = tmp_path / "bomlu.srt"
+    yol.write_text("Merhaba dünya", encoding="utf-16")     # BOM yazar
+    assert nv.detect_sub_charenc(str(yol)) == ("", True)
+
+
+# ---------------------------------------------------------------- cikti adi
+def test_remux_cikti_adi_kodek_etiketi_tasimaz():
+    """Hicbir sey degismedigi icin CODEC/CQ/olcekleme etiketi anlamsiz."""
+    yol = nv.FFmpegStudioPro._build_output_path(
+        None, remux_cfg(input_file=r"C:\video\Film (2020).mkv", container="mkv"))
+    assert yol == r"C:\video\Film (2020)_Altyazili.mkv"
+
+
+def test_remux_cikti_adi_konteyneri_izler():
+    yol = nv.FFmpegStudioPro._build_output_path(
+        None, remux_cfg(input_file=r"C:\video\a.mkv", container="mp4"))
+    assert yol.endswith("a_Altyazili.mp4")
+
+
+# ---------------------------------------------------------------- altyazi plani
+def test_remux_sub_plan_indeksleri_esleme_sirasiyla_tutar():
+    izler, atlanan, harici = nv.remux_sub_plan(
+        remux_cfg(container="mkv"), probes(sub_codecs=["mov_text", "ass"]))
+    assert izler == [("0:s:0", "srt"), ("0:s:1", "copy"), ("1:0", "copy")]
+    assert atlanan == []
+    assert harici == 2
+
+
+def test_remux_sub_plan_atlanan_iz_indeksi_kaydirir():
+    """Atlanan iz esleme disinda kaldigi icin sonraki -c:s:N kayar."""
+    izler, atlanan, harici = nv.remux_sub_plan(
+        remux_cfg(container="mp4"),
+        probes(sub_codecs=["hdmv_pgs_subtitle", "subrip"]))
+    assert izler == [("0:s:1", "mov_text"), ("1:0", "mov_text")]
+    assert atlanan == ["hdmv_pgs_subtitle"]
+    assert harici == 1
+
+
+@pytest.mark.parametrize("codec", sorted(nv.BITMAP_SUB_CODECS))
+def test_resim_tabanli_izler_mp4de_atlanir_mkvde_kopyalanir(codec):
+    assert nv.gomulu_sub_codec(codec, "mp4") is None
+    assert nv.gomulu_sub_codec(codec, "mkv") == "copy"

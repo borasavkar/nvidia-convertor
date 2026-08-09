@@ -213,6 +213,68 @@ LOG_SATIR_SAYISI = 3
 # Altyazi dugmesinin bos haldeki metni (secilince dosya adiyla degisir)
 SUB_BTN_BOS = "💬 Altyazı Ekle"
 
+# =======================================================
+# SADECE ALTYAZI (REMUX) MODU SABITLERI
+# =======================================================
+# Bu moddaki tablolar ffmpeg 9.0 ile OLCULEREK dolduruldu, ezberden degil:
+#   * Matroska metin altyazilarin UTF-8 olmasini SART kosar. CP1254 bir .srt
+#     "-c:s copy" ile kopyalanirsa baytlar oldugu gibi gecer ve oynaticida
+#     bozuk karakter cikar; "-c:s srt" ile charenc VERILMEDEN cevrilmeye
+#     kalkilirsa ffmpeg "Invalid UTF-8 in decoded subtitles text" diyip isi
+#     69 cikis koduyla birakir. Yani kodlama olcumu opsiyonel bir susleme
+#     degil, isin calismasiyla cokmesi arasindaki fark.
+#   * mov_text (MP4 kaynaklardan gelir) matroska'ya KOPYALANAMAZ:
+#     "Could not write header (incorrect codec parameters ?)". srt'ye cevrilir.
+#   * MP4 metin altyazi olarak YALNIZCA mov_text kabul eder; srt'yi "copy" ile
+#     denemek "codec not currently supported in container" ile 127 verir.
+#   * Resim tabanli altyazilar (PGS/VobSub) metne cevrilemez: MP4 ciktida
+#     tasinamazlar, atlanmalari gerekir. MKV bunlari sorunsuz kopyalar.
+
+# ffprobe'un dondurdugu resim tabanli altyazi codec adlari.
+BITMAP_SUB_CODECS = frozenset({
+    "hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
+    "dvb_subtitle", "dvbsub", "dvb_teletext", "xsub",
+})
+
+# Stil tasiyan altyazi uzantilari: cevirmek gerekirse srt yerine ass'e yazilir
+# ki renk/konum/italik bilgisi kaybolmasin.
+STYLED_SUB_EXTS = ('.ass', '.ssa')
+
+# Harici altyazinin karakter kodlamasi. "" = olc ve kendin karar ver
+# (bkz. detect_sub_charenc). Digerleri kullanicinin elle zorlamasi icindir:
+# olcum yalnizca "UTF-8 mi, degil mi" sorusunu kesin cevaplayabilir; UTF-8
+# degilse hangi 8-bitlik kod sayfasi oldugunu bayta bakarak ayirt etmek
+# mumkun degil (her kod sayfasi her bayt dizisini "basariyla" cozer).
+SUB_CHARENC_SECENEKLERI = {
+    "Otomatik (ölçerek karar ver)": "",
+    "UTF-8": "UTF-8",
+    "Windows-1254 (Türkçe)": "CP1254",
+    "ISO-8859-9 (Türkçe)": "ISO-8859-9",
+    "Windows-1252 (Batı Avrupa)": "CP1252",
+    "Windows-1250 (Orta Avrupa)": "CP1250",
+    "Windows-1251 (Kiril)": "CP1251",
+}
+
+# UTF-8 olmayan bir altyazida otomatik modun varsayacagi kod sayfasi.
+# Turkce altyazilarda fiilen standart olan budur; yanlissa arayuzden zorlanir.
+SUB_CHARENC_VARSAYILAN = "CP1254"
+
+# Altyazi izine yazilacak dil etiketi (ISO 639-2). Oynaticilar izi bu etiketle
+# adlandirir; bos birakilirsa "Undetermined" olarak gorunur.
+SUB_DIL_SECENEKLERI = {
+    "Belirtilmedi": "",
+    "Türkçe (tur)": "tur",
+    "İngilizce (eng)": "eng",
+    "Almanca (ger)": "ger",
+    "Fransızca (fre)": "fre",
+    "İspanyolca (spa)": "spa",
+    "İtalyanca (ita)": "ita",
+    "Rusça (rus)": "rus",
+    "Arapça (ara)": "ara",
+    "Japonca (jpn)": "jpn",
+    "Korece (kor)": "kor",
+}
+
 
 def get_cq_range(codec, scale):
     codec_ranges = CQ_RANGES.get(codec, CQ_RANGES["hevc_nvenc"])
@@ -288,6 +350,12 @@ def build_filters(cfg, probes):
     Hem gercek kodlama hem de onizleme karesi ayni zinciri kullanir; boylece
     onizlemede gordugun goruntu ciktida elde edecegin goruntudur.
     """
+    # Sadece-altyazi modunda kare HIC dokunulmadan kopyalanir: tek bir filtre
+    # bile calismaz. Bu erken cikis olmadan onizleme, ciktida OLMAYAN bir renk
+    # duzeltmesini gosterip "onizleme = cikti" sozunu bozuyordu.
+    if cfg.get("is_remux"):
+        return [], []
+
     notes = []
     cuda_frames = probes.get("cuda_frames", False)
     vf_filters = []
@@ -371,6 +439,11 @@ def build_command(cfg, probes):
 
     (komut_listesi, kullaniciya_gosterilecek_notlar) dondurur.
     """
+    # Sadece-altyazi modu hicbir kodlayici/filtre/hwaccel kullanmadigi icin
+    # tamamen ayri bir govdeye sahiptir (bkz. build_remux_command).
+    if cfg.get("is_remux"):
+        return build_remux_command(cfg, probes)
+
     notes = []
     cuda_frames = probes.get("cuda_frames", False)
     is_pure_cuda = cfg["is_pure_cuda"]
@@ -491,6 +564,210 @@ def build_command(cfg, probes):
             cmd.extend(["-metadata", f"{anahtar}={deger}"])
 
     cmd.extend(["-y", cfg["output_file"]])
+    return cmd, notes
+
+
+# =======================================================
+# SADECE ALTYAZI EKLE (KODEK KORUNUR)
+# =======================================================
+def detect_sub_charenc(path, zorla=""):
+    """
+    Harici altyazi dosyasinin ffmpeg'e nasil verilecegini OLCER.
+
+    (charenc, cevrim_gerekli) dondurur:
+        charenc        -> "-sub_charenc" degeri; "" ise bayrak eklenmez
+        cevrim_gerekli -> True ise altyazi KOPYALANAMAZ; cozulup yeniden
+                          yazilmalidir (cikti UTF-8 olsun diye)
+
+    Bu fonksiyon diske dokundugu icin build_command'a dogrudan girmez;
+    sonucu `probes` sozluguyle tasinir (bkz. run_ffmpeg).
+    """
+    if zorla:
+        # Kullanici elle sectiyse olcume bakmadan cevrim yapilir: zorlanan
+        # kodlamanin ciktiya yansimasinin tek yolu altyaziyi yeniden yazmak.
+        return zorla, True
+    try:
+        with open(path, "rb") as fh:
+            ham = fh.read()
+    except OSError:
+        # Okunamadi (izin/yol): sessizce varsayim uretmek yerine hicbir sey
+        # yapma, ffmpeg kendi acik hatasini versin.
+        return "", False
+
+    # UTF-16 BOM'u ffmpeg'in altyazi cozucusu KENDISI cevirir. "-sub_charenc
+    # UTF-16" vermek cift cevrime yol acip "Unable to recode subtitle event"
+    # hatasi uretiyor; "copy" ise UTF-16 baytlarini oldugu gibi gecirip
+    # okunamaz bir iz birakiyor. Dogrusu: charenc VERMEDEN cevirmek.
+    if ham[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return "", True
+
+    if ham.startswith(b"\xef\xbb\xbf"):
+        ham = ham[3:]
+    try:
+        ham.decode("utf-8")
+    except UnicodeDecodeError:
+        return SUB_CHARENC_VARSAYILAN, True
+    return "", False
+
+
+def harici_sub_codec(sub_file, container, cevrim_gerekli):
+    """
+    Harici altyazi dosyasinin hedef konteynere hangi codec'le yazilacagi.
+    "copy" = dosya bayt bayt gecer; yalnizca UTF-8 metinde guvenlidir.
+    """
+    if container == "mp4":
+        return "mov_text"        # MP4'un kabul ettigi tek metin altyazi
+    if not cevrim_gerekli:
+        return "copy"
+    # Cevirmek gerekiyor: stilli dosyayi srt'ye dusurmek renk/italik bilgisini
+    # siler, o yuzden ass olarak yeniden yazilir.
+    return "ass" if os.path.splitext(sub_file)[1].lower() in STYLED_SUB_EXTS else "srt"
+
+
+def gomulu_sub_codec(codec, container):
+    """
+    Kaynakta ZATEN VAR OLAN bir altyazi izinin hedef konteynere hangi codec'le
+    yazilacagi. None dondurmek "tasinamaz, atlanmali" demektir.
+    """
+    if container == "mp4":
+        if codec in BITMAP_SUB_CODECS:
+            return None          # resim -> metin cevrilemez
+        return "copy" if codec == "mov_text" else "mov_text"
+    # MKV pratikte her seyi alir (PGS/VobSub dahil); tek istisna mov_text.
+    return "srt" if codec == "mov_text" else "copy"
+
+
+def remux_sub_plan(cfg, probes):
+    """
+    Sadece-altyazi modunda hangi altyazi izinin nasil yazilacagini belirler.
+    SAF FONKSIYON.
+
+    (izler, atlanan, harici_sira) dondurur:
+        izler       -> [(map_ifadesi, codec), ...] cikti altyazi SIRASIYLA
+        atlanan     -> hedef konteynere tasinamayan kaynak codec adlari
+        harici_sira -> harici altyazinin cikti icindeki altyazi indeksi
+                       (-metadata:s:s:N / -disposition:s:N icin)
+
+    Izler tek tek eslenir ("0:s?" gibi toplu degil): boylece tasinamayan
+    izler disarida birakilabilir ve "-c:s:N" indeksleri esleme sirasiyla
+    birebir tutar.
+    """
+    container = cfg["container"]
+    izler = []
+    atlanan = []
+
+    if cfg.get("keep_embedded_subs", True):
+        for i, kaynak_codec in enumerate(probes.get("sub_codecs") or []):
+            hedef = gomulu_sub_codec(kaynak_codec, container)
+            if hedef is None:
+                atlanan.append(kaynak_codec)
+                continue
+            izler.append((f"0:s:{i}", hedef))
+
+    harici_sira = len(izler)
+    izler.append(("1:0", harici_sub_codec(cfg["sub_file"], container,
+                                          bool(probes.get("sub_needs_transcode")))))
+    return izler, atlanan, harici_sira
+
+
+def build_remux_command(cfg, probes):
+    """
+    "Sadece altyazi ekle" komutunu kurar. SAF FONKSIYON.
+
+    Video ve ses akislari HIC yeniden kodlanmaz (-c:v copy -c:a copy); kaynagin
+    codec'i neyse ciktida aynen kalir. Tek yapilan is harici altyazi dosyasini
+    yeni bir iz olarak konteynere eklemektir. Kodlama olmadigi icin -hwaccel,
+    -vf, CQ, preset gibi hicbir kodlayici ayari kullanilmaz.
+
+    Kirpma bu modda BILEREK yok: kopyalama kare hassas degildir, kesim en yakin
+    anahtar kareye kayar ve harici altyazi buna gore otelenmedigi icin cikti
+    desenkron olur (bkz. _prepare_job, kullaniciyi bastan uyarir).
+    """
+    notes = []
+    container = cfg["container"]
+    sub_file = cfg["sub_file"]
+    charenc = probes.get("sub_charenc") or ""
+
+    cmd = ["ffmpeg", "-hide_banner", "-i", cfg["input_file"]]
+    # -sub_charenc GIRDI BASINA bir secenektir: altyazi girdisinden ONCE
+    # gelmeli, yoksa hicbir etkisi olmaz.
+    if charenc:
+        cmd.extend(["-sub_charenc", charenc])
+    cmd.extend(["-i", sub_file])
+
+    izler, atlanan, harici_sira = remux_sub_plan(cfg, probes)
+
+    # 0:V:0 -> kapak resmi gibi "attached_pic" akislarini atlayan ilk video.
+    cmd.extend(["-map", "0:V:0", "-map", "0:a?"])
+    for map_ifadesi, _ in izler:
+        cmd.extend(["-map", map_ifadesi])
+    if container != "mp4":
+        # ASS altyazilarin fontlari konteyner ekleri olarak gelir; MP4 ek
+        # tasiyamaz, MKV tasir.
+        cmd.extend(["-map", "0:t?"])
+    # Bolumler acikca ilk girdiden alinir: birden fazla girdi varken ffmpeg
+    # kaynagi kendi seciyor ve altyazi girdisi one gecebiliyor.
+    cmd.extend(["-map_chapters", "0"])
+
+    cmd.extend(["-c:v", "copy", "-c:a", "copy"])
+    for sira, (_, codec) in enumerate(izler):
+        cmd.extend([f"-c:s:{sira}", codec])
+
+    if cfg.get("sub_lang"):
+        cmd.extend([f"-metadata:s:s:{harici_sira}", f"language={cfg['sub_lang']}"])
+    if cfg.get("sub_lang_label"):
+        cmd.extend([f"-metadata:s:s:{harici_sira}", f"title={cfg['sub_lang_label']}"])
+
+    if cfg.get("sub_default"):
+        # Yeni iz varsayilan yapilirken ESKI varsayilan da dusurulmeli; yoksa
+        # iki iz birden "default" isaretli kalir ve oynatici eskisini secer.
+        #
+        # "-default" (eksi onekli) YALNIZCA default bayragini kaldirir. Duz "0"
+        # yazmak tum bayrak maskesini sifirliyor: olculdu, forced isaretli bir
+        # iz forced'ini de kaybediyor (yabanci diyalog izleri boyle bozulur).
+        cmd.extend([f"-disposition:s:{harici_sira}", "default"])
+        for sira in range(len(izler)):
+            if sira != harici_sira:
+                cmd.extend([f"-disposition:s:{sira}", "-default"])
+
+    if container == "mp4":
+        cmd.extend(["-movflags", "+faststart"])
+
+    for anahtar, deger in (("title", cfg["meta_title"]), ("artist", cfg["meta_artist"]),
+                           ("album", cfg["meta_album"]), ("grouping", cfg["meta_grouping"])):
+        if deger.strip():
+            cmd.extend(["-metadata", f"{anahtar}={deger}"])
+
+    cmd.extend(["-y", cfg["output_file"]])
+
+    # ---------- KULLANICIYA NOTLAR ----------
+    notes.append("⚡ Sadece altyazı ekleniyor: video ve ses HİÇ yeniden "
+                 "kodlanmıyor, kodek ve kalite birebir korunuyor.")
+    harici_codec = izler[harici_sira][1]
+    if harici_codec == "copy":
+        notes.append("💬 Altyazı dosyası UTF-8; olduğu gibi kopyalanıyor.")
+    elif charenc:
+        notes.append(f"💬 Altyazı UTF-8 değil: {charenc} olarak okunup UTF-8 "
+                     f"'{harici_codec}' izine yazılıyor.")
+    else:
+        notes.append(f"💬 Altyazı '{harici_codec}' olarak yeniden yazılıyor "
+                     "(hedef konteynerin istediği biçim).")
+
+    korunan = len(izler) - 1
+    if korunan:
+        notes.append(f"💬 Kaynaktaki {korunan} altyazı izi de korunuyor.")
+    if atlanan:
+        notes.append(f"⚠️ {len(atlanan)} resim tabanlı altyazı izi ATLANDI "
+                     f"({', '.join(atlanan)}): MP4 bunları taşıyamaz. "
+                     "Korumak için konteyneri MKV seçin.")
+    if container == "mp4":
+        notes.append("ℹ️ MP4 altyazıyı mov_text olarak tutar: stil/renk bilgisi "
+                     "korunmaz ve bazı oynatıcılar bu izi göstermez. "
+                     "Uyumluluk için MKV önerilir.")
+    if cfg["scale"] != "Orijinal" or color_filter_of(cfg) or cfg.get("use_bwdif"):
+        notes.append("ℹ️ Ölçekleme / renk / taraklanma ayarları bu modda "
+                     "UYGULANMADI: hepsi yeniden kodlama gerektirir.")
+
     return cmd, notes
 
 
@@ -755,6 +1032,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.create_tab("H.264 (Standart)", "h264_nvenc")
         self.create_vp9_tab("VP9 (Google VOD)")
         self.create_cuda_tab("⚡ SAF CUDA")
+        self.create_remux_tab("💬 SADECE ALTYAZI")
 
         self.tabview.set("⚡ SAF CUDA")
 
@@ -997,6 +1275,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         "vp9_speed": ["0 (Maksimum Kalite)", "1 (VOD Önerisi)", "2 (Standart)", "3 (Hızlı)", "4", "5 (En Hızlı)"],
         "vp9_tiles": ["0 (Tek Sütun)", "1 (Düşük Çöz. için)", "2 (1080p için)", "3 (4K/1440p için)", "4 (8K)"],
         "vp9_threads": ["Auto", "2", "4", "8", "16", "32"],
+        "sub_lang": list(SUB_DIL_SECENEKLERI),
+        "sub_charenc": list(SUB_CHARENC_SECENEKLERI),
     }
 
     def _create_audio_card(self, parent, tab_vars, pady):
@@ -1100,13 +1380,16 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         except Exception:
             return istenen
 
-    def _tab_meta(self, is_pure_cuda, is_vp9, accent, supports_subs=True):
+    def _tab_meta(self, is_pure_cuda, is_vp9, accent, supports_subs=True,
+                  is_remux=False):
         """Sekme davranisini isim icinde metin aramak yerine veri olarak tasir."""
         return {
             "is_pure_cuda": is_pure_cuda,
             "is_vp9": is_vp9,
             "accent": accent,             # (renk, hover, yazi rengi) - baslat butonu
             "supports_subs": supports_subs,
+            # True ise kodlama YOK: video/ses kopyalanir, yalnizca altyazi eklenir.
+            "is_remux": is_remux,
         }
 
     def _nvenc_tab_vars(self, container_default, cq_default):
@@ -1419,6 +1702,93 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                                                 "Donanımsal Tarak Giderici (yadif_cuda)", cuda=True)
         kart_salter.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(10, 0))
 
+    # =======================================================
+    # SADECE ALTYAZI SEKMESİ (KODEK KORUNUR)
+    # =======================================================
+    def create_remux_tab(self, tab_name):
+        """
+        Kodlama yapmayan sekme: video ve ses akislari kopyalanir, yalnizca
+        secilen altyazi dosyasi yeni bir iz olarak eklenir. Kodlayici ayari
+        (CQ, preset, cozunurluk, ses bitrate) bu sekmede BILEREK yoktur -
+        hicbiri kullanilmiyor, gostermek yanlis beklenti yaratirdi.
+        """
+        self.tabview.add(tab_name)
+        frame = self.tabview.tab(tab_name)
+
+        tab_vars = {
+            "codec": "copy",
+            "container": ctk.StringVar(value="mkv"),
+            "sub_lang": ctk.StringVar(value="Türkçe (tur)"),
+            "sub_charenc": ctk.StringVar(value=list(SUB_CHARENC_SECENEKLERI)[0]),
+            "sub_default": ctk.BooleanVar(value=True),
+            "keep_subs": ctk.BooleanVar(value=True),
+            "metadata_title": ctk.StringVar(value=""),
+            "metadata_artist": ctk.StringVar(value=""),
+            "metadata_album": ctk.StringVar(value=""),
+            "metadata_grouping": ctk.StringVar(value=""),
+        }
+        tab_vars.update(self._tab_meta(is_pure_cuda=False, is_vp9=False,
+                                       accent=("#d68910", "#a9690a", "black"),
+                                       is_remux=True))
+        self.tabs[tab_name] = tab_vars
+
+        main_grid = ctk.CTkFrame(frame, fg_color="transparent")
+        main_grid.pack(fill="both", expand=True)
+        main_grid.columnconfigure(0, weight=1)
+        main_grid.columnconfigure(1, weight=1)
+
+        col_left = ctk.CTkFrame(main_grid, fg_color="transparent")
+        col_left.grid(row=0, column=0, sticky="nsew", padx=5)
+
+        card_bilgi = self.create_card(col_left, "⚡ Yeniden Kodlama Yok")
+        card_bilgi.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(
+            card_bilgi,
+            text="Video ve ses akışları olduğu gibi kopyalanır; kaynağın\n"
+                 "kodek'i ve kalitesi birebir korunur. Sadece altyazı izi\n"
+                 "eklenir, bu yüzden işlem saniyeler sürer.",
+            font=("Arial", 11), text_color="#AAAAAA", justify="left", anchor="w"
+        ).pack(anchor="w", padx=15, pady=(0, 12))
+
+        card_format = self.create_card(col_left, "📦 Çıkış Konteyneri")
+        card_format.pack(fill="x", pady=(0, 10))
+        ReadOnlyComboBox(card_format, variable=tab_vars["container"],
+                         values=["mkv", "mp4"]).pack(fill="x", padx=15, pady=(0, 5))
+        ctk.CTkLabel(card_format,
+                     text="* MKV her kodek'i ve her altyazı türünü alır (önerilen).\n"
+                          "* MP4 altyazıyı mov_text'e çevirmek zorundadır: stil\n"
+                          "  bilgisi korunmaz, resim tabanlı izler taşınamaz.",
+                     font=("Arial", 10, "italic"), text_color="gray",
+                     justify="left", anchor="w").pack(anchor="w", padx=15, pady=(0, 12))
+
+        card_kod = self.create_card(col_left, "🔤 Altyazı Karakter Kodlaması")
+        card_kod.pack(fill="x", pady=(0, 10))
+        ReadOnlyComboBox(card_kod, variable=tab_vars["sub_charenc"],
+                         values=list(SUB_CHARENC_SECENEKLERI)).pack(fill="x", padx=15, pady=(0, 5))
+        ctk.CTkLabel(card_kod,
+                     text="Otomatik: dosya UTF-8 ise olduğu gibi kopyalanır,\n"
+                          "değilse Windows-1254 varsayılıp UTF-8'e çevrilir.\n"
+                          "Türkçe harfler bozuk çıkarsa buradan zorlayın.",
+                     font=("Arial", 10, "italic"), text_color="gray",
+                     justify="left", anchor="w").pack(anchor="w", padx=15, pady=(0, 12))
+
+        col_right = ctk.CTkFrame(main_grid, fg_color="transparent")
+        col_right.grid(row=0, column=1, sticky="nsew", padx=5)
+
+        card_iz = self.create_card(col_right, "💬 Altyazı İzi")
+        card_iz.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(card_iz, text="Dil etiketi:").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_iz, variable=tab_vars["sub_lang"],
+                         values=list(SUB_DIL_SECENEKLERI)).pack(fill="x", padx=15, pady=(0, 10))
+        self._add_toggle(card_iz, "Varsayılan altyazı yap", tab_vars["sub_default"],
+                         "Oynatıcı açılışta bu izi seçer; kaynaktaki eski "
+                         "varsayılan işareti kaldırılır.")
+        self._add_toggle(card_iz, "Kaynaktaki altyazı izlerini koru", tab_vars["keep_subs"],
+                         "Kapatılırsa videoda gömülü olan altyazılar atılır, "
+                         "yalnızca eklediğiniz dosya kalır.", son=True)
+
+        self._create_metadata_card(col_right, tab_vars)
+
     def select_video(self):
         path = filedialog.askopenfilename(
             title="Dönüştürülecek Videoyu Seçin",
@@ -1447,6 +1817,11 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.txt_queue.configure(state="normal")
         self.txt_queue.delete("1.0", tk.END)
         for i, job in enumerate(self.job_queue, 1):
+            if job.get("is_remux"):
+                self.txt_queue.insert(tk.END, "%2d. %-38s  ALTYAZI %s -> %s\n" % (
+                    i, os.path.basename(job["input_file"])[:38],
+                    os.path.basename(job["sub_file"])[:20], job["container"]))
+                continue
             etiket = "VP9" if job["is_vp9"] else job["codec_v"].split("_")[0].upper()
             self.txt_queue.insert(tk.END, "%2d. %-38s  %s %s CQ%s -> %s\n" % (
                 i, os.path.basename(job["input_file"])[:38], etiket,
@@ -1809,6 +2184,12 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         if cfg.get("output_dir"):
             klasor = cfg["output_dir"]
         isim, _ = os.path.splitext(dosya_adi)
+
+        # Sadece-altyazi modunda codec/CQ/olcekleme etiketlerinin hicbiri anlam
+        # tasimaz (hicbiri degismiyor); ad yalnizca ne yapildigini soyler.
+        if cfg.get("is_remux"):
+            return os.path.join(klasor, f"{isim}_Altyazili.{cfg['container']}")
+
         etiket_codec = "VP9" if cfg["is_vp9"] else cfg["codec_v"].split('_')[0].upper()
         etiket_scale = cfg["scale"] if cfg["scale"] != "Orijinal" else "Orijinal"
         etiket_bwdif = "_Deint" if cfg["use_bwdif"] else ""
@@ -1930,6 +2311,16 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         tab_vars = self.tabs[tab_name]
         is_pure_cuda = tab_vars["is_pure_cuda"]
         is_vp9 = tab_vars["is_vp9"]
+        is_remux = tab_vars.get("is_remux", False)
+
+        def oku(anahtar, varsayilan=""):
+            """Sekmede olmayan degiskenleri varsayilanla karsilar.
+
+            Sadece-altyazi sekmesinde kodlayici ayarlari (CQ, cozunurluk, ses
+            bitrate) HIC yoktur; onlari kosulsuz okumak KeyError verirdi.
+            """
+            var = tab_vars.get(anahtar)
+            return var.get() if hasattr(var, "get") else varsayilan
 
         if is_pure_cuda:
             codec_v = tab_vars["selected_codec"].get().split("(")[1].split(")")[0]
@@ -1940,14 +2331,17 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "tab_name": tab_name,
             "is_pure_cuda": is_pure_cuda,
             "is_vp9": is_vp9,
+            "is_remux": is_remux,
             "codec_v": codec_v,
             "input_file": self.video_path.get(),
             "sub_file": self.sub_path.get(),
             "container": tab_vars["container"].get(),
-            "a_bitrate": tab_vars["audio_bitrate"].get(),
-            "cq_val": str(tab_vars["cq"].get()),
-            "scale": tab_vars["scale"].get(),
-            "preset": tab_vars["preset"].get() if "preset" in tab_vars else "",
+            "a_bitrate": oku("audio_bitrate", "128k"),
+            # Sadece-altyazi modunda CQ diye bir sey yok; "-" dosya adinda ve
+            # kuyruk listesinde okunabilir bir yer tutucu olarak kalir.
+            "cq_val": str(oku("cq", "-")),
+            "scale": oku("scale", "Orijinal"),
+            "preset": oku("preset", ""),
             "meta_title": tab_vars["metadata_title"].get(),
             "meta_artist": tab_vars["metadata_artist"].get(),
             "meta_album": tab_vars["metadata_album"].get(),
@@ -1975,6 +2369,21 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             cfg["vp9_speed"] = tab_vars["vp9_speed"].get().split(" ")[0]
             cfg["vp9_tiles"] = tab_vars["vp9_tiles"].get().split(" ")[0]
             cfg["vp9_threads"] = tab_vars["vp9_threads"].get()
+
+        if is_remux:
+            # Kutulardaki etiketler ("Türkçe (tur)") degil, ffmpeg'in bekledigi
+            # degerler tasinir; etiketin sade hali altyazi izinin adi olur.
+            etiket = oku("sub_lang", "Belirtilmedi")
+            cfg["sub_lang"] = SUB_DIL_SECENEKLERI.get(etiket, "")
+            cfg["sub_lang_label"] = etiket.split(" (")[0] if cfg["sub_lang"] else ""
+            cfg["sub_charenc_zorla"] = SUB_CHARENC_SECENEKLERI.get(
+                oku("sub_charenc", ""), "")
+            cfg["sub_default"] = bool(oku("sub_default", False))
+            cfg["keep_embedded_subs"] = bool(oku("keep_subs", True))
+            # WebM metin altyazi tasiyamaz; bu sekme zaten onu sunmuyor ama
+            # elle duzenlenmis bir ayar dosyasi kutuya sokabilir.
+            if cfg["container"] not in ("mkv", "mp4"):
+                cfg["container"] = "mkv"
 
         cfg["codec_a"] = "libopus" if cfg["container"] in ("mkv", "webm") else "aac"
         cfg["copy_audio"] = cfg["a_bitrate"].startswith("Kopyala")
@@ -2012,6 +2421,35 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         if cfg["output_dir"] and not os.path.isdir(cfg["output_dir"]):
             messagebox.showerror("Hata", f"Çıkış klasörü bulunamadı:\n{cfg['output_dir']}")
             return None
+
+        if cfg["is_remux"]:
+            if not cfg["sub_file"]:
+                messagebox.showerror(
+                    "Altyazı Seçilmedi",
+                    "Bu sekme yalnızca altyazı ekler; eklenecek altyazı dosyasını "
+                    "seçin.\n\n'💬 Altyazı Ekle' düğmesini kullanabilir veya "
+                    "dosyayı pencereye sürükleyebilirsiniz.")
+                return None
+            if not os.path.isfile(cfg["sub_file"]):
+                messagebox.showerror("Hata", f"Seçilen altyazı dosyası bulunamadı:\n{cfg['sub_file']}")
+                return None
+            # Kirpma burada BILEREK engellenir. Olculdu (ffmpeg 9.0):
+            #   * -ss girdi tarafinda verilirse harici altyazi videoyla birlikte
+            #     otelenmiyor ve cikti desenkron oluyor.
+            #   * -ss cikis tarafinda verilirse senkron dogru ama kopyalama
+            #     anahtar kareye bagli oldugu icin GOP'u seyrek kaynaklarda tum
+            #     video paketleri dusuyor: 0 kareli, sessizce bozuk bir dosya.
+            # Kare hassas kirpma yeniden kodlama ister; bu modun varlik sebebi
+            # ise tam olarak yeniden kodlamamak.
+            if (cfg.get("trim_start") or "").strip() or (cfg.get("trim_end") or "").strip():
+                messagebox.showerror(
+                    "Kırpma Bu Modda Kullanılamaz",
+                    "Sadece altyazı ekleme modunda kırpma yapılamaz: kopyalama kare "
+                    "hassas değildir, kesim en yakın anahtar kareye kayar ve altyazı "
+                    "kayması olur.\n\nKırpma alanlarını boşaltın ya da kırpma için "
+                    "kodlama yapan sekmelerden birini kullanın.")
+                return None
+
         for anahtar, etiket in (("trim_start", "Başlangıç"), ("trim_end", "Bitiş")):
             ham = (cfg.get(anahtar) or "").strip()
             if ham and parse_time(ham) is None:
@@ -2144,7 +2582,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             # Komut kurmak icin gereken, ancak ancak GERCEKTEN denenerek
             # ogrenilebilecek her sey burada toplanir; build_command bunlari
             # veri olarak alir ve kendisi hicbir olcum yapmaz (saf fonksiyon).
-            kaynak_pix = self.get_video_pix_fmt(input_file)
+            is_remux = cfg.get("is_remux", False)
+            kaynak_pix = "" if is_remux else self.get_video_pix_fmt(input_file)
             cuda_frames = self.can_use_cuda_frames(input_file) if cfg["is_pure_cuda"] else False
 
             # 12-bit + renk filtresi: NVDEC kareyi cozebiliyor ama RAM'e
@@ -2156,13 +2595,26 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                     "filtreler CPU'da çalışacak (kodlama yine NVENC)."
                 )
 
+            # Sadece-altyazi modunda gomulu izler HER konteynerde onemli: harici
+            # altyazinin cikti indeksi ve "-c:s:N" eslemesi onlarin sayisina bagli.
+            if is_remux:
+                gomulu_subs = (self.get_subtitle_codecs(input_file)
+                               if cfg.get("keep_embedded_subs", True) else [])
+                sub_charenc, sub_cevrim = detect_sub_charenc(
+                    cfg["sub_file"], cfg.get("sub_charenc_zorla", ""))
+            else:
+                gomulu_subs = (self.get_subtitle_codecs(input_file)
+                               if container == "mkv" and not cfg["sub_file"] else [])
+                sub_charenc, sub_cevrim = "", False
+
             probes = {
                 "cuda_frames": cuda_frames,
                 "pix_fmt": kaynak_pix,
-                "sub_codecs": (self.get_subtitle_codecs(input_file)
-                               if container == "mkv" and not cfg["sub_file"] else []),
+                "sub_codecs": gomulu_subs,
+                "sub_charenc": sub_charenc,
+                "sub_needs_transcode": sub_cevrim,
                 "audio_copy_ok": (self.can_copy_audio(input_file, container)
-                                  if cfg["copy_audio"] else False),
+                                  if cfg["copy_audio"] and not is_remux else False),
             }
 
             cmd, notes = build_command(cfg, probes)
