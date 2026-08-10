@@ -982,6 +982,11 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.lbl_queue.pack(side="left", fill="x", expand=True)
         ctk.CTkButton(queue_top, text="➕ Kuyruğa Ekle", width=130,
                       command=self.add_to_queue).pack(side="left", padx=3)
+        # Klasor modu kuyrugun bir ozelligi: tek tek eklemek yerine klasordeki
+        # tum videolari ayni ayarlarla bir seferde ekler.
+        ctk.CTkButton(queue_top, text="📁 Klasör Ekle", width=125, fg_color="#2fa572",
+                      hover_color="#1e6b4a",
+                      command=self.select_folder).pack(side="left", padx=3)
         ctk.CTkButton(queue_top, text="➖ Sondakini Sil", width=120, fg_color="#555555",
                       hover_color="#444444", command=self.remove_last_from_queue).pack(side="left", padx=3)
         ctk.CTkButton(queue_top, text="🧹 Temizle", width=90, fg_color="#555555",
@@ -1880,6 +1885,208 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self._refresh_queue_view()
         self.log(f"➕ Kuyruğa eklendi ({len(self.job_queue)}): {os.path.basename(job['output_file'])}")
 
+    # =======================================================
+    # KLASORDEKI TUM VIDEOLAR (TOPLU EKLEME)
+    # =======================================================
+    def _klasordeki_videolar(self, klasor, alt_klasorler):
+        """Klasordeki video dosyalarini alfabetik sirali dondurur."""
+        bulunan = []
+        if alt_klasorler:
+            for kok, _, dosyalar in os.walk(klasor):
+                for d in dosyalar:
+                    if os.path.splitext(d)[1].lower() in VIDEO_EXTS:
+                        bulunan.append(os.path.join(kok, d))
+        else:
+            try:
+                for d in os.listdir(klasor):
+                    tam = os.path.join(klasor, d)
+                    if os.path.isfile(tam) and os.path.splitext(d)[1].lower() in VIDEO_EXTS:
+                        bulunan.append(tam)
+            except OSError:
+                return []
+        return sorted(bulunan)
+
+    def _alt_klasorde_video_var_mi(self, klasor):
+        """Alt klasorleri sormaya deger mi? (bos yere soru sormamak icin)"""
+        try:
+            for kok, _, dosyalar in os.walk(klasor):
+                if os.path.normpath(kok) == os.path.normpath(klasor):
+                    continue
+                if any(os.path.splitext(d)[1].lower() in VIDEO_EXTS for d in dosyalar):
+                    return True
+        except OSError:
+            pass
+        return False
+
+    def _eslesen_altyazi(self, video_yolu):
+        """
+        Videonun YANINDAKI ayni adli altyaziyi bulur.
+
+        Klasor modunda tek bir altyaziyi 50 videoya takmak sacma olurdu; her
+        video kendi altyazisiyla eslesir:
+            Film.mkv -> Film.srt, Film.tr.srt, Film.tur.srt, Film.eng.ass ...
+        Turkce sonekli olanlar once denenir (kullanicinin varsayilan dili).
+        """
+        kok = os.path.splitext(video_yolu)[0]
+        klasor = os.path.dirname(video_yolu) or "."
+        taban = os.path.basename(kok).lower()
+
+        # 1) Birebir ayni ad
+        for uzanti in SUB_EXTS:
+            aday = kok + uzanti
+            if os.path.isfile(aday):
+                return aday
+
+        # 2) Dil sonekli adlar: "Film.tr.srt" gibi
+        try:
+            adaylar = [d for d in os.listdir(klasor)
+                       if os.path.splitext(d)[1].lower() in SUB_EXTS
+                       and d.lower().startswith(taban + ".")]
+        except OSError:
+            return ""
+        if not adaylar:
+            return ""
+
+        def oncelik(ad):
+            orta = ad.lower()[len(taban) + 1:].rsplit(".", 1)[0]
+            return (0 if orta in ("tr", "tur", "turkce", "türkçe") else 1, ad.lower())
+
+        return os.path.join(klasor, sorted(adaylar, key=oncelik)[0])
+
+    def select_folder(self):
+        """
+        Bir klasordeki TUM videolari, o an secili sekme ayarlariyla kuyruga ekler.
+
+        Ayarlar bir kez okunur ve her dosyaya aynen uygulanir; tek fark girdi
+        dosyasi ve (altyazi destekleyen sekmelerde) o videoyla eslesen altyazidir.
+        """
+        klasor = filedialog.askdirectory(
+            title="Videoların bulunduğu klasörü seçin",
+            initialdir=self.last_video_dir or None)
+        if not klasor:
+            return
+
+        alt_klasorler = False
+        if self._alt_klasorde_video_var_mi(klasor):
+            alt_klasorler = messagebox.askyesno(
+                "Alt Klasörler",
+                "Alt klasörlerde de video var.\n\nOnlar da eklensin mi?\n\n"
+                "Evet: alt klasörler dahil\nHayır: yalnızca bu klasör")
+
+        videolar = self._klasordeki_videolar(klasor, alt_klasorler)
+        if not videolar:
+            messagebox.showinfo("Video Bulunamadı",
+                                f"Seçilen klasörde desteklenen video yok:\n{klasor}")
+            return
+
+        self.last_video_dir = klasor
+        tab_vars = self.tabs.get(self.tabview.get(), {})
+        altyazi_destegi = tab_vars.get("supports_subs", True)
+        is_remux = tab_vars.get("is_remux", False)
+
+        self.log(f"📁 {len(videolar)} video taranıyor: {klasor}")
+        self.update_idletasks()
+
+        # Altyazi eslestirmesi ONCE yapilir (ucuz, diske tek bakis) - cunku
+        # sonucu kullaniciya sormamiz gerekebiliyor.
+        eslesmeler = {v: (self._eslesen_altyazi(v) if altyazi_destegi else "")
+                      for v in videolar}
+        eslesen_sayi = sum(1 for a in eslesmeler.values() if a)
+
+        # Kodlayan sekmelerde altyazi GOMULUR ve geri alinamaz. Klasordeki
+        # altyazilari sessizce videolara yakmak buyuk bir surpriz olurdu;
+        # bir kez soruyoruz. Sadece-altyazi sekmesinde soru anlamsiz (isin ta
+        # kendisi altyazi eklemek).
+        if eslesen_sayi and not is_remux:
+            if not messagebox.askyesno(
+                    "Altyazılar Bulundu",
+                    f"{eslesen_sayi} videonun yanında aynı adlı altyazı dosyası var.\n\n"
+                    "Bu altyazılar videonun GÖRÜNTÜSÜNE GÖMÜLSÜN mü?\n"
+                    "(Gömülen altyazı sonradan kapatılamaz.)\n\n"
+                    "Hayır derseniz videolar altyazısız dönüştürülür."):
+                eslesmeler = {v: "" for v in videolar}
+                eslesen_sayi = 0
+
+        isler, atlanan, mevcut_olanlar = [], [], []
+        # Kendi ciktilarimizi tekrar girdi olarak almamak icin: ikinci kez
+        # calistirildiginda klasor artik "x_HEVC_1080p_CQ31.mkv" gibi dosyalarla
+        # dolu olur ve onlar da kuyruga girerdi.
+        ciktilar = set()
+
+        for sira, video in enumerate(videolar, 1):
+            alt = eslesmeler[video]
+            cfg = self.collect_config(input_file=video, sub_file=alt)
+
+            if is_remux and not alt:
+                atlanan.append((video, "eşleşen altyazı dosyası yok"))
+                continue
+            sorun = self._job_sorunu(cfg)
+            if sorun:
+                atlanan.append((video, sorun[1].splitlines()[0]))
+                continue
+
+            ciktilar.add(os.path.normcase(cfg["output_file"]))
+            if os.path.exists(cfg["output_file"]):
+                mevcut_olanlar.append(cfg)
+            isler.append(cfg)
+
+            # Cozunurluk olcumu (buyutme korumasi) dosya basina bir ffprobe
+            # calistirabiliyor; arayuz donmus gibi gorunmesin.
+            if sira % 5 == 0:
+                self.update_idletasks()
+
+        # Kendi ciktisi olan girdileri ele
+        onceki = len(isler)
+        isler = [c for c in isler
+                 if os.path.normcase(c["input_file"]) not in ciktilar]
+        if onceki != len(isler):
+            atlanan.append((f"{onceki - len(isler)} dosya",
+                            "bu ayarların çıktısı olduğu için atlandı"))
+        # KIMLIGE gore suzuyoruz: sozlukleri "==" ile karsilastirmak hem yavas
+        # hem de ayni ayarli iki kaydi birbirine karistirabilir.
+        kalan = {id(c) for c in isler}
+        mevcut_olanlar = [c for c in mevcut_olanlar if id(c) in kalan]
+
+        if not isler:
+            messagebox.showinfo(
+                "Eklenecek İş Yok",
+                "Klasördeki videoların hiçbiri eklenemedi.\n\n"
+                + "\n".join(f"• {os.path.basename(v)}: {n}" for v, n in atlanan[:10]))
+            return
+
+        # Uzerine yazma SORUSU BIR KEZ sorulur: 40 dosya icin 40 kez sormak
+        # kullanilamaz bir arayuz olurdu.
+        if mevcut_olanlar:
+            cevap = messagebox.askyesnocancel(
+                "Bazı Çıktılar Zaten Var",
+                f"{len(mevcut_olanlar)} videonun çıktısı klasörde zaten mevcut.\n\n"
+                "Evet: üzerine yazılsın\n"
+                "Hayır: bu dosyalar atlansın\n"
+                "İptal: hiçbir şey eklenmesin")
+            if cevap is None:
+                self.log("⚠️ Klasör ekleme iptal edildi.")
+                return
+            if not cevap:
+                atlanacak = {id(c) for c in mevcut_olanlar}
+                isler = [c for c in isler if id(c) not in atlanacak]
+                atlanan.append((f"{len(mevcut_olanlar)} dosya", "çıktısı zaten var"))
+                if not isler:
+                    messagebox.showinfo("Eklenecek İş Yok",
+                                        "Tüm çıktılar zaten mevcut; hiçbir iş eklenmedi.")
+                    return
+
+        self.job_queue.extend(isler)
+        self._refresh_queue_view()
+        self.log(f"📁 Kuyruğa {len(isler)} iş eklendi (klasör: {os.path.basename(klasor)})")
+        for video, neden in atlanan:
+            self.log(f"   ⏭️ Atlandı — {os.path.basename(video)}: {neden}")
+
+        ozet = f"{len(isler)} video kuyruğa eklendi."
+        if atlanan:
+            ozet += f"\n{len(atlanan)} kayıt atlandı (ayrıntılar terminalde)."
+        ozet += "\n\n'Dönüştür' düğmesi hepsini sırayla işler."
+        messagebox.showinfo("Klasör Eklendi", ozet)
+
     def remove_last_from_queue(self):
         if self.job_queue:
             job = self.job_queue.pop()
@@ -2333,12 +2540,16 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.on_tab_change()
         self._refresh_all_cq_displays()
 
-    def collect_config(self):
+    def collect_config(self, input_file=None, sub_file=None):
         """
         Tum Tk degiskenlerini ANA THREAD'de okuyup duz bir sozluge kopyalar.
         Tkinter thread-safe degildir; worker thread'in StringVar/widget okumasi
         en iyi ihtimalle bayat deger, en kotusunde kilitlenme demektir.
         Worker (run_ffmpeg) bundan sonra yalnizca bu sozlugu gorur.
+
+        input_file / sub_file verilirse arayuzdeki secimin YERINE gecer; klasor
+        modu boylece ayni ayarlari her dosya icin yeniden kullanabiliyor
+        (bkz. select_folder). Verilmezse eski davranis birebir korunur.
         """
         tab_name = self.tabview.get()
         tab_vars = self.tabs[tab_name]
@@ -2366,8 +2577,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "is_vp9": is_vp9,
             "is_remux": is_remux,
             "codec_v": codec_v,
-            "input_file": self.video_path.get(),
-            "sub_file": self.sub_path.get(),
+            "input_file": input_file if input_file is not None else self.video_path.get(),
+            "sub_file": sub_file if sub_file is not None else self.sub_path.get(),
             "container": tab_vars["container"].get(),
             "a_bitrate": oku("audio_bitrate", "128k"),
             # Sadece-altyazi modunda CQ diye bir sey yok; "-" dosya adinda ve
@@ -2437,6 +2648,48 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         cfg["output_file"] = self._build_output_path(cfg)
         return cfg
 
+    # Dogrulama mesajlari tek yerde: tekli secim de klasor modu da AYNI
+    # kurallari uygulasin diye. Basligi ve metni dondurur, sorun yoksa None.
+    def _job_sorunu(self, cfg):
+        """cfg ile ilgili sorunu (baslik, metin) olarak dondurur; yoksa None."""
+        if not os.path.isfile(cfg["input_file"]):
+            return ("Hata", f"Video dosyası bulunamadı:\n{cfg['input_file']}")
+        if cfg["output_dir"] and not os.path.isdir(cfg["output_dir"]):
+            return ("Hata", f"Çıkış klasörü bulunamadı:\n{cfg['output_dir']}")
+
+        if cfg["is_remux"]:
+            if not cfg["sub_file"]:
+                return ("Altyazı Seçilmedi",
+                        "Bu sekme yalnızca altyazı ekler; eklenecek altyazı dosyasını "
+                        "seçin.\n\n'💬 Altyazı Ekle' düğmesini kullanabilir veya "
+                        "dosyayı pencereye sürükleyebilirsiniz.")
+            if not os.path.isfile(cfg["sub_file"]):
+                return ("Hata", f"Altyazı dosyası bulunamadı:\n{cfg['sub_file']}")
+            # Kirpma burada BILEREK engellenir. Olculdu (ffmpeg 9.0):
+            #   * -ss girdi tarafinda verilirse harici altyazi videoyla birlikte
+            #     otelenmiyor ve cikti desenkron oluyor.
+            #   * -ss cikis tarafinda verilirse senkron dogru ama kopyalama
+            #     anahtar kareye bagli oldugu icin GOP'u seyrek kaynaklarda tum
+            #     video paketleri dusuyor: 0 kareli, sessizce bozuk bir dosya.
+            # Kare hassas kirpma yeniden kodlama ister; bu modun varlik sebebi
+            # ise tam olarak yeniden kodlamamak.
+            if (cfg.get("trim_start") or "").strip() or (cfg.get("trim_end") or "").strip():
+                return ("Kırpma Bu Modda Kullanılamaz",
+                        "Sadece altyazı ekleme modunda kırpma yapılamaz: kopyalama kare "
+                        "hassas değildir, kesim en yakın anahtar kareye kayar ve altyazı "
+                        "kayması olur.\n\nKırpma alanlarını boşaltın ya da kırpma için "
+                        "kodlama yapan sekmelerden birini kullanın.")
+
+        for anahtar, etiket in (("trim_start", "Başlangıç"), ("trim_end", "Bitiş")):
+            ham = (cfg.get(anahtar) or "").strip()
+            if ham and parse_time(ham) is None:
+                return ("Hata", f"Kırpma {etiket} değeri anlaşılamadı: '{ham}'\n\n"
+                                "Beklenen biçim: 90  |  01:30  |  00:01:30.5")
+        bas, son = parse_time(cfg.get("trim_start")), parse_time(cfg.get("trim_end"))
+        if bas and son and son <= bas:
+            return ("Hata", "Kırpma bitişi başlangıçtan sonra olmalı.")
+        return None
+
     def _prepare_job(self):
         """
         Mevcut arayuz durumundan bir is tanimi uretir; dogrulama ve kullanici
@@ -2448,50 +2701,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         cfg = self.collect_config()
 
-        if not os.path.isfile(cfg["input_file"]):
-            messagebox.showerror("Hata", f"Seçilen video dosyası bulunamadı:\n{cfg['input_file']}")
-            return None
-        if cfg["output_dir"] and not os.path.isdir(cfg["output_dir"]):
-            messagebox.showerror("Hata", f"Çıkış klasörü bulunamadı:\n{cfg['output_dir']}")
-            return None
-
-        if cfg["is_remux"]:
-            if not cfg["sub_file"]:
-                messagebox.showerror(
-                    "Altyazı Seçilmedi",
-                    "Bu sekme yalnızca altyazı ekler; eklenecek altyazı dosyasını "
-                    "seçin.\n\n'💬 Altyazı Ekle' düğmesini kullanabilir veya "
-                    "dosyayı pencereye sürükleyebilirsiniz.")
-                return None
-            if not os.path.isfile(cfg["sub_file"]):
-                messagebox.showerror("Hata", f"Seçilen altyazı dosyası bulunamadı:\n{cfg['sub_file']}")
-                return None
-            # Kirpma burada BILEREK engellenir. Olculdu (ffmpeg 9.0):
-            #   * -ss girdi tarafinda verilirse harici altyazi videoyla birlikte
-            #     otelenmiyor ve cikti desenkron oluyor.
-            #   * -ss cikis tarafinda verilirse senkron dogru ama kopyalama
-            #     anahtar kareye bagli oldugu icin GOP'u seyrek kaynaklarda tum
-            #     video paketleri dusuyor: 0 kareli, sessizce bozuk bir dosya.
-            # Kare hassas kirpma yeniden kodlama ister; bu modun varlik sebebi
-            # ise tam olarak yeniden kodlamamak.
-            if (cfg.get("trim_start") or "").strip() or (cfg.get("trim_end") or "").strip():
-                messagebox.showerror(
-                    "Kırpma Bu Modda Kullanılamaz",
-                    "Sadece altyazı ekleme modunda kırpma yapılamaz: kopyalama kare "
-                    "hassas değildir, kesim en yakın anahtar kareye kayar ve altyazı "
-                    "kayması olur.\n\nKırpma alanlarını boşaltın ya da kırpma için "
-                    "kodlama yapan sekmelerden birini kullanın.")
-                return None
-
-        for anahtar, etiket in (("trim_start", "Başlangıç"), ("trim_end", "Bitiş")):
-            ham = (cfg.get(anahtar) or "").strip()
-            if ham and parse_time(ham) is None:
-                messagebox.showerror("Hata", f"Kırpma {etiket} değeri anlaşılamadı: '{ham}'\n\n"
-                                             "Beklenen biçim: 90  |  01:30  |  00:01:30.5")
-                return None
-        bas, son = parse_time(cfg.get("trim_start")), parse_time(cfg.get("trim_end"))
-        if bas and son and son <= bas:
-            messagebox.showerror("Hata", "Kırpma bitişi başlangıçtan sonra olmalı.")
+        sorun = self._job_sorunu(cfg)
+        if sorun:
+            messagebox.showerror(*sorun)
             return None
 
         if os.path.exists(cfg["output_file"]):
