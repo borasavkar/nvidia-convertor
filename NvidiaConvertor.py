@@ -643,6 +643,50 @@ def detect_sub_charenc(path, zorla=""):
     return "", False
 
 
+def sub_kodlama_uyusmazligi(sub_file, zorlanan):
+    """
+    Kullanicinin ELLE sectigi altyazi kodlamasi bu dosyaya uyuyor mu?
+    (hata, uyari) dondurur; ikisi de None olabilir. Diski okur, Tk'ye dokunmaz.
+
+    hata  -> Secilen kodlama dosyayi COZEMIYOR. ffmpeg de cozemez: olculdu,
+             "Invalid UTF-8 in decoded subtitles text" deyip isi 69 cikis
+             koduyla birakiyor. Kuyruga almadan once durdurmak gerekir.
+    uyari -> Dosya duzgun UTF-8 ama kullanici 8 bitlik bir kod sayfasi secmis.
+             Bu HATA VERMEZ (her kod sayfasi her bayti "cozer") ama Turkce
+             harfler bozulur: "Türkçe" -> "TÃ¼rkÃ§e". Sessiz kalmak yanlis.
+
+    "Otomatik" secildiginde (zorlanan bos) burasi hic calismaz; olcumu
+    detect_sub_charenc yapar.
+    """
+    if not zorlanan:
+        return None, None
+    try:
+        with open(sub_file, "rb") as fh:
+            ham = fh.read()
+    except OSError:
+        return None, None
+
+    try:
+        ham.decode(zorlanan)
+    except (UnicodeDecodeError, LookupError):
+        return (f"Seçilen '{zorlanan}' kodlaması bu altyazı dosyasını çözemiyor.\n\n"
+                "FFmpeg de çözemez ve iş yarıda kalır. Altyazı kodlamasını "
+                "'Otomatik' yapın ya da dosyanın gerçek kodlamasını seçin."), None
+
+    # Dosya temiz UTF-8 iken 8 bitlik bir kod sayfasi secilmisse: hata cikmaz,
+    # ama harfler bozulur. ASCII dosyalarda iki yorum ayni sonucu verir, sus.
+    if zorlanan.upper().replace("-", "") not in ("UTF8", "UTF16"):
+        try:
+            metin = ham.decode("utf-8")
+        except UnicodeDecodeError:
+            return None, None
+        if any(ord(ch) > 127 for ch in metin):
+            return None, (f"dosya UTF-8 görünüyor ama '{zorlanan}' seçili; "
+                          "Türkçe harfler bozuk çıkabilir. "
+                          "Kodlamayı 'Otomatik' yapmanız önerilir.")
+    return None, None
+
+
 def harici_sub_codec(sub_file, container, cevrim_gerekli):
     """
     Harici altyazi dosyasinin hedef konteynere hangi codec'le yazilacagi.
@@ -2078,6 +2122,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.job_queue.extend(isler)
         self._refresh_queue_view()
         self.log(f"📁 Kuyruğa {len(isler)} iş eklendi (klasör: {os.path.basename(klasor)})")
+        for cfg in isler:
+            self._sub_kodlama_uyar(cfg)
         for video, neden in atlanan:
             self.log(f"   ⏭️ Atlandı — {os.path.basename(video)}: {neden}")
 
@@ -2665,6 +2711,13 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                         "dosyayı pencereye sürükleyebilirsiniz.")
             if not os.path.isfile(cfg["sub_file"]):
                 return ("Hata", f"Altyazı dosyası bulunamadı:\n{cfg['sub_file']}")
+            # Elle secilen kodlama dosyayi cozemiyorsa ffmpeg de cozemez;
+            # dakikalarca surecek bir kuyrugu bosuna baslatmayalim.
+            kod_hata, _ = sub_kodlama_uyusmazligi(cfg["sub_file"],
+                                                  cfg.get("sub_charenc_zorla", ""))
+            if kod_hata:
+                return ("Altyazı Kodlaması Uyuşmuyor",
+                        f"{os.path.basename(cfg['sub_file'])}\n\n{kod_hata}")
             # Kirpma burada BILEREK engellenir. Olculdu (ffmpeg 9.0):
             #   * -ss girdi tarafinda verilirse harici altyazi videoyla birlikte
             #     otelenmiyor ve cikti desenkron oluyor.
@@ -2690,6 +2743,19 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             return ("Hata", "Kırpma bitişi başlangıçtan sonra olmalı.")
         return None
 
+    def _sub_kodlama_uyar(self, cfg):
+        """
+        Kodlama secimi dosyayi bozacak gibiyse loga bir satir dusur.
+        Hata degil: is calisir, ama harfler bozuk cikabilir. Engellemek yerine
+        gorunur kilmak dogru olan - kullanici bilerek zorlamis olabilir.
+        """
+        if not cfg.get("is_remux"):
+            return
+        _, uyari = sub_kodlama_uyusmazligi(cfg.get("sub_file", ""),
+                                           cfg.get("sub_charenc_zorla", ""))
+        if uyari:
+            self.log(f"⚠️ {os.path.basename(cfg['sub_file'])}: {uyari}")
+
     def _prepare_job(self):
         """
         Mevcut arayuz durumundan bir is tanimi uretir; dogrulama ve kullanici
@@ -2705,6 +2771,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         if sorun:
             messagebox.showerror(*sorun)
             return None
+        self._sub_kodlama_uyar(cfg)
 
         if os.path.exists(cfg["output_file"]):
             if not messagebox.askyesno(

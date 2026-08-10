@@ -807,6 +807,64 @@ def test_detect_sub_charenc_utf16_de_charenc_vermez(tmp_path):
     assert nv.detect_sub_charenc(str(yol)) == ("", True)
 
 
+# ------------------------------------------------- elle secilen kodlama denetimi
+def test_kodlama_zorlanmadiysa_denetim_yapilmaz(tmp_path):
+    """'Otomatik' secildiginde karar detect_sub_charenc'in; burasi susar."""
+    yol = tmp_path / "a.srt"
+    yol.write_text("Merhaba dünya", encoding="cp1254")
+    assert nv.sub_kodlama_uyusmazligi(str(yol), "") == (None, None)
+
+
+def test_cozemeyen_kodlama_HATA_verir(tmp_path):
+    """
+    Olculdu: CP1254 bir dosyayi UTF-8 sanip cevirmeye kalkinca ffmpeg
+    "Invalid UTF-8 in decoded subtitles text" deyip 69 ile cikiyor.
+    Kuyruga almadan once yakalanmali.
+    """
+    yol = tmp_path / "a.srt"
+    yol.write_text("Merhaba dünya", encoding="cp1254")
+    hata, uyari = nv.sub_kodlama_uyusmazligi(str(yol), "UTF-8")
+    assert hata and "çözemiyor" in hata
+    assert uyari is None
+
+
+def test_utf8_dosyada_8bit_kod_sayfasi_UYARI_verir(tmp_path):
+    """
+    Hata cikmaz (her kod sayfasi her bayti "cozer") ama harfler bozulur:
+    "Türkçe" -> "TÃ¼rkÃ§e". Sessiz kalmak yanlis olurdu.
+    """
+    yol = tmp_path / "a.srt"
+    yol.write_text("Merhaba dünya", encoding="utf-8")
+    hata, uyari = nv.sub_kodlama_uyusmazligi(str(yol), "CP1254")
+    assert hata is None
+    assert uyari and "bozuk" in uyari
+
+
+def test_ascii_dosyada_uyari_verilmez(tmp_path):
+    """Iki yorum ayni sonucu veriyorsa uyari gurultu olur."""
+    yol = tmp_path / "a.srt"
+    yol.write_text("Plain ascii only", encoding="utf-8")
+    assert nv.sub_kodlama_uyusmazligi(str(yol), "CP1254") == (None, None)
+
+
+def test_dogru_kodlama_sessiz_gecer(tmp_path):
+    yol = tmp_path / "a.srt"
+    yol.write_text("Merhaba dünya", encoding="cp1254")
+    assert nv.sub_kodlama_uyusmazligi(str(yol), "CP1254") == (None, None)
+
+
+def test_okunamayan_dosyada_uydurma_yapilmaz():
+    assert nv.sub_kodlama_uyusmazligi(r"C:\olmayan\dosya.srt", "UTF-8") == (None, None)
+
+
+def test_tanimsiz_kodlama_adi_cokertmez(tmp_path):
+    """Bozuk bir ayar dosyasindan gelen sacma deger programi durdurmamali."""
+    yol = tmp_path / "a.srt"
+    yol.write_text("Merhaba", encoding="utf-8")
+    hata, _ = nv.sub_kodlama_uyusmazligi(str(yol), "Klingonca")
+    assert hata and "çözemiyor" in hata
+
+
 # ---------------------------------------------------------------- cikti adi
 def test_remux_cikti_adi_kodek_etiketi_tasimaz():
     """Hicbir sey degismedigi icin CODEC/CQ/olcekleme etiketi anlamsiz."""
