@@ -200,6 +200,31 @@ SCALE_MAP = {
     "1080p": 1920, "1440p": 2560, "4K": 3840
 }
 
+# =======================================================
+# KODLAYICI LEVEL (BITRATE TAVANI) AYARI
+# =======================================================
+# NVENC'in "auto" level secimi, dusuk CQ'da SERT bir bitrate tavani yaratiyor.
+# Olculdu (park_joy.y4m, 10 sn 1080p50, p7, ffmpeg 9.0) - bitrate kbps:
+#
+#   kodek | auto (eski)              | asagidaki deger
+#   hevc  | 16149 / 16149 / 16149    | 119565 / 63370 / 39165   (CQ 12 / 18 / 22)
+#   h264  | 41237 / 41233 / 35333    | 120447 /  57279 / 34945
+#
+# "auto" ile CQ12, CQ16 ve CQ18 BAYT BAYT ayni dosyayi uretiyordu: kalite
+# kaydiricisi arsiv ucunda hicbir sey yapmiyordu. VMAF 87.3 -> 96.4 (5.1) ->
+# daha yukari (6.2).
+#
+# DIKKAT - LEVEL CQ'DAN BAGIMSIZ OLARAK BITSTREAM'E YAZILIR. Yani CQ31'lik
+# siradan bir cikti da artik Level 6.2 damgali. Katı donanim cozuculer (bazi
+# TV/set-ustu kutular) yuksek level'i, dosya kucuk olsa bile reddedebilir.
+# Uyumluluk sorunu yasarsan dusurulecek yer burasi - tek satir.
+#
+# AV1 BILEREK DISARIDA: olculdu, AV1'de "auto" ile tavan YOK (CQ31->CQ12 arasi
+# 19933 -> 117709 kbps temiz olcekleniyor). AV1'e level EKLEMEK zarar verir;
+# level 5.1 denendiginde 40194 kbps'te tavan olusuyordu.
+HEVC_LEVEL = "6.2"    # 4.1 (auto) -> tavan pratikte kalkar
+H264_LEVEL = "5.1"    # 4.2 (auto) -> tavan kalkar; 6.2 ile ayni sonucu verdi
+
 # Dosya secimi ve surukle-birak ayni listeyi kullanir (birbirinden sapmasin diye)
 VIDEO_EXTS = ('.mp4', '.mkv', '.avi', '.mov', '.ts', '.vob', '.y4m',
               '.webm', '.flv', '.wmv', '.m4v', '.mpg', '.mpeg')
@@ -513,7 +538,7 @@ def build_command(cfg, probes):
             cmd.extend(["-tag:v", "hvc1"])
         cmd.extend(["-preset:v", preset, "-rc:v", "vbr", "-cq:v", cq_val, "-tune:v", "uhq",
                     "-profile:v", "main10" if ten_bit else "main", "-tier:v", "main",
-                    "-level:v", "auto", "-spatial-aq", "1", "-rc-lookahead", "32",
+                    "-level:v", HEVC_LEVEL, "-spatial-aq", "1", "-rc-lookahead", "32",
                     "-bf", "4", "-b_ref_mode", "middle"])
         if ten_bit:
             cmd.extend(["-highbitdepth", "true"])
@@ -532,11 +557,19 @@ def build_command(cfg, probes):
 
     elif codec_v == "h264_nvenc":
         cmd.extend(["-preset:v", preset, "-rc:v", "vbr", "-cq:v", cq_val, "-tune:v", "hq",
-                    "-rc-lookahead", "32", "-spatial-aq", "1", "-bf", "3",
-                    "-b_ref_mode", "middle"])
+                    "-level:v", H264_LEVEL, "-rc-lookahead", "32", "-spatial-aq", "1",
+                    "-bf", "3", "-b_ref_mode", "middle"])
         if not cuda_frames:
             cmd.extend(["-pix_fmt", "yuv420p"])
         cmd.extend(["-temporal-aq", "1" if cfg["use_temporal_aq"] else "0"])
+
+    # Level bilgisi loga yazilir: uyumluluk sorunu yasandiginda kullanicinin
+    # sebebi gorebilmesi icin (level CQ'dan bagimsiz olarak bitstream'e girer).
+    if codec_v in ("hevc_nvenc", "h264_nvenc"):
+        seviye = HEVC_LEVEL if codec_v == "hevc_nvenc" else H264_LEVEL
+        notes.append(f"🎚️ Kodlayıcı seviyesi (level) {seviye}: bitrate tavanı "
+                     "kaldırıldı, düşük CQ'da kalite gerçekten artar. Çok eski "
+                     "cihazlarda oynatma sorunu çıkarsa sebebi budur.")
 
     if cfg["use_multipass"]:
         cmd.extend(["-multipass", "2"])
