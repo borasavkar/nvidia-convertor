@@ -280,6 +280,42 @@ def test_cuda_karelerinde_8bit_icin_gpu_format_donusumu_gerekir():
     assert "scale_cuda=format=nv12" in vf_of(cmd)
 
 
+# ---------------------------------------------------------------- level tavani
+def test_hevc_level_tavani_kaldirilmis():
+    """
+    Olculdu: "-level:v auto" 16149 kbps'lik SERT bir tavan koyuyordu; CQ12,
+    CQ16 ve CQ18 BAYT BAYT ayni dosyayi uretiyordu. 6.2 ile tavan kalkiyor.
+    """
+    cmd, _ = nv.build_command(cfg(codec_v="hevc_nvenc"), probes())
+    assert val_of(cmd, "-level:v") == "6.2"
+    assert val_of(cmd, "-level:v") != "auto"
+
+
+def test_h264_level_tavani_kaldirilmis():
+    """Olculdu: auto (Level 4.2) 41237 kbps'te tavan yapiyordu; 5.1 kaldiriyor."""
+    cmd, _ = nv.build_command(cfg(codec_v="h264_nvenc"), probes())
+    assert val_of(cmd, "-level:v") == "5.1"
+
+
+def test_av1_level_ALMAZ():
+    """
+    AV1'de tavan YOK (olculdu: 19933 -> 117709 kbps temiz olcekleniyor).
+    Level EKLEMEK zarar verir: 5.1 denendiginde 40194 kbps'te tavan olusuyordu.
+    Bu test, ileride "tutarlilik olsun" diye AV1'e level eklenmesini engeller.
+    """
+    cmd, _ = nv.build_command(cfg(codec_v="av1_nvenc"), probes())
+    assert "-level:v" not in cmd
+
+
+def test_level_kullaniciya_bildirilir():
+    """Level CQ'dan bagimsiz bitstream'e girer; uyumluluk sorununda sebebi gorunsun."""
+    for codec, seviye in (("hevc_nvenc", "6.2"), ("h264_nvenc", "5.1")):
+        _, notes = nv.build_command(cfg(codec_v=codec), probes())
+        assert any(seviye in n and "level" in n.lower() for n in notes), codec
+    _, notes = nv.build_command(cfg(codec_v="av1_nvenc"), probes())
+    assert not any("level" in n.lower() for n in notes)
+
+
 def test_h264_highbitdepth_kullanmaz():
     cmd, _ = nv.build_command(cfg(codec_v="h264_nvenc"), probes())
     assert "-highbitdepth" not in cmd
