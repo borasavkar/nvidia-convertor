@@ -51,8 +51,20 @@ def cfg(**kw):
         "brightness": 0.0, "contrast": 1.0, "saturation": 1.0, "gamma": 1.0,
         "codec_a": "libopus", "copy_audio": False,
         "upscale_blocked": False,
+        # collect_config bunu donanima gore doldurur; NVENC sekmelerinin
+        # urettigi deger "cuda". Testlerde de gercek deger kullanilmali,
+        # yoksa komutlar uygulamanin hic uretmedigi bir sekli dogrular.
+        "hwaccel": "cuda",
         "output_file": r"C:\video\cikti.mkv",
     }
+    base.update(kw)
+    return base
+
+
+def amd_cfg(**kw):
+    """AMD (AMF) sekmelerinin urettigi is tanimi."""
+    base = cfg(codec_v="hevc_amf", hwaccel="d3d11va", cq_val="24",
+               preset="", amf_quality="quality", container="mkv")
     base.update(kw)
     return base
 
@@ -320,6 +332,126 @@ def test_h264_highbitdepth_kullanmaz():
     cmd, _ = nv.build_command(cfg(codec_v="h264_nvenc"), probes())
     assert "-highbitdepth" not in cmd
     assert val_of(cmd, "-tune:v") == "hq"   # h264_nvenc'te uhq YOK
+
+
+# ================================================================
+# AMD (AMF) VE DONANIM SECIMI
+# ================================================================
+def test_amd_cqp_ve_qp_kullanir_cq_kullanmaz():
+    """
+    AMF'nin kalite modeli NVENC'ten farkli: "-cq:v" YOK, "-rc cqp" + qp_i/qp_p.
+    """
+    cmd, _ = nv.build_command(amd_cfg(cq_val="24"), probes())
+    assert val_of(cmd, "-rc") == "cqp"
+    assert val_of(cmd, "-qp_i") == "24" and val_of(cmd, "-qp_p") == "24"
+    assert "-cq:v" not in cmd
+    assert "-preset:v" not in cmd          # AMF p1..p7 tanimaz
+
+
+def test_amd_quality_onayari_komuta_girer():
+    cmd, _ = nv.build_command(amd_cfg(amf_quality="balanced"), probes())
+    assert val_of(cmd, "-quality") == "balanced"
+
+
+def test_amd_h264te_b_kare_qp_si_da_verilir():
+    cmd, _ = nv.build_command(amd_cfg(codec_v="h264_amf", cq_val="30"), probes())
+    assert val_of(cmd, "-qp_b") == "30"
+    cmd, _ = nv.build_command(amd_cfg(codec_v="hevc_amf"), probes())
+    assert "-qp_b" not in cmd
+
+
+@pytest.mark.parametrize("ten_bit,beklenen", [(True, "p010le"), (False, "nv12")])
+def test_amd_bit_derinligi(ten_bit, beklenen):
+    cmd, _ = nv.build_command(amd_cfg(ten_bit=ten_bit), probes())
+    assert val_of(cmd, "-pix_fmt") == beklenen
+
+
+def test_amd_h264_10bit_ALMAZ():
+    """
+    Olculdu: h264_amf'e p010le verilince "10-bit input video is not supported
+    by AMF H264 encoder" deyip is HIC baslamiyor. ffmpeg'in "Supported pixel
+    formats" listesi p010le yazsa da yanlis; 10-bit sessizce 8-bit'e dusurulur
+    ve kullaniciya soylenir.
+    """
+    cmd, notes = nv.build_command(
+        amd_cfg(codec_v="h264_amf", ten_bit=True), probes())
+    assert val_of(cmd, "-pix_fmt") == "nv12"
+    assert any("10-bit" in n and "H.264" in n for n in notes)
+
+
+def test_amd_hevc_ve_av1_10bit_alir():
+    for codec in ("hevc_amf", "av1_amf"):
+        cmd, notes = nv.build_command(amd_cfg(codec_v=codec, ten_bit=True), probes())
+        assert val_of(cmd, "-pix_fmt") == "p010le", codec
+        assert not any("10-bit" in n for n in notes), codec
+
+
+def test_amd_level_ALMAZ():
+    """
+    Olculdu: AMF'de level bitrate'i kisitlamiyor (level 153 ile 186 bayt bayt
+    ayni cikti). NVENC'teki tavan kusuru burada yok; level eklemek gereksiz
+    ve bitstream'i bosuna yuksek sinifa isaretler.
+    """
+    for codec in nv.AMF_CODECS:
+        cmd, _ = nv.build_command(amd_cfg(codec_v=codec), probes())
+        assert "-level:v" not in cmd and "-level" not in cmd, codec
+
+
+def test_amd_nvenc_bayraklarini_kullanmaz():
+    """NVENC'e ozgu bayraklar AMF'de karsiliksiz; komuta sizmamali."""
+    cmd, _ = nv.build_command(
+        amd_cfg(use_temporal_aq=True, use_multipass=True), probes())
+    for bayrak in ("-temporal-aq", "-spatial-aq", "-rc-lookahead", "-b_ref_mode",
+                   "-tune:v", "-highbitdepth", "-multipass"):
+        assert bayrak not in cmd, bayrak
+
+
+def test_amd_kullanildigi_bildirilir():
+    _, notes = nv.build_command(amd_cfg(), probes())
+    assert any("AMD" in n for n in notes)
+
+
+# ---------------------------------------------------------------- hwaccel
+def test_hwaccel_markaya_gore_secilir():
+    """
+    Olculdu: AMD makinede "-hwaccel cuda" verilince ffmpeg "Cannot load
+    nvcuda.dll / Device creation failed" deyip cikti dosyasini HIC olusturmuyor.
+    Yanlis marka bayragi = calismayan uygulama.
+    """
+    nvidia, _ = nv.build_command(cfg(codec_v="hevc_nvenc"), probes())
+    amd, _ = nv.build_command(amd_cfg(), probes())
+    assert val_of(nvidia, "-hwaccel") == "cuda"
+    assert val_of(amd, "-hwaccel") == "d3d11va"
+
+
+def test_hwaccel_bos_ise_bayrak_hic_eklenmez():
+    """Donanim yoksa yazilim cozucusu; bos bir -hwaccel degeri gecmemeli."""
+    cmd, _ = nv.build_command(cfg(hwaccel=""), probes())
+    assert "-hwaccel" not in cmd
+
+
+def test_onizleme_de_ayni_hwaccel_i_kullanir():
+    """Onizleme NVIDIA'ya sabitlenirse AMD makinede kare uretemez."""
+    cmd = nv.build_preview_command(amd_cfg(), probes(), "x.png")
+    assert val_of(cmd, "-hwaccel") == "d3d11va"
+
+
+def test_donanim_tanimlari_tutarli():
+    """Her markanin sekmeleri ve deneme kodlayicisi tanimli olmali."""
+    for marka, bilgi in nv.DONANIM.items():
+        assert bilgi["deneme"] and bilgi["sekmeler"], marka
+    # Marka sekmeleri ile donanimsiz sekmeler cakismamali
+    marka_sekmeleri = {s for b in nv.DONANIM.values() for s in b["sekmeler"]}
+    assert not (marka_sekmeleri & set(nv.DONANIMSIZ_SEKMELER))
+
+
+def test_deneme_boyutu_amf_minimumunun_ustunde():
+    """
+    Olculdu: 256x256'da hevc_amf/av1_amf "encoder->Init() failed with error 5"
+    veriyor. Kucuk bir deneme boyutu CALISAN bir karti "yok" gosterirdi.
+    """
+    g, y = (int(x) for x in nv.DENEME_BOYUTU.split("x"))
+    assert g >= 640 and y >= 360
 
 
 # ---------------------------------------------------------------- ses
