@@ -406,6 +406,19 @@ def test_amd_tablolari_nvenc_tablosundan_KOPYA_DEGIL():
     assert nv.get_cq_range("av1_amf", "1080p")[0] > 100
 
 
+def test_amf_minimum_kare_uygulama_secenekleriyle_uyumlu():
+    """
+    Olculdu: hevc_amf 352 genislikte cokuyor, 384'te calisiyor; hevc/av1 96
+    yukseklikte cokuyor, 128'de calisiyor. Uygulamanin EN KUCUK olcekleme
+    secenegi (240p = 426x240) bu sinirlarin ustunde olmali, yoksa kullanici
+    listeden secebildigi bir cozunurlukte "Init() failed error 5" alir.
+    """
+    en_kucuk = min(nv.SCALE_MAP.values())          # 240p -> 426
+    assert en_kucuk >= nv.AMF_MIN_GENISLIK
+    # 240p'nin 16:9 kisa kenari da sinirin ustunde mi?
+    assert round(en_kucuk * 9 / 16) >= nv.AMF_MIN_YUKSEKLIK
+
+
 def test_amd_yuksek_cozunurlukte_qp_araligi_yukselir():
     """Olculen egilim: cozunurluk arttikca ayni kalite daha yuksek QP'de saglaniyor."""
     for codec in ("hevc_amf", "h264_amf", "av1_amf"):

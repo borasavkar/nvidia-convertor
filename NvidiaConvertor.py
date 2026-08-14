@@ -346,6 +346,16 @@ AMF_QP_B_KODEKLERI = ("av1_amf", "h264_amf")
 AMF_QP_TAVANI = {"av1_amf": 255}
 AMF_QP_TAVANI_VARSAYILAN = 51
 
+# VCN'in kabul ettigi en kucuk kare. Altina inilirse ffmpeg yalnizca
+# "encoder->Init() failed with error 5" der; sebebini anlamak imkansiz.
+# OLCULDU (RX 9070 XT): en kisitlayici olan hevc_amf 352 genislikte cokup
+# 384'te calisiyor; hevc ve av1 96 yukseklikte cokup 128'de calisiyor.
+# Uygulamanin en kucuk secenegi 240p (426x240) bu sinirlarin ustunde, yani
+# olcekleme secenekleri guvenli; sinir yalnizca KUCUK KAYNAK + "Orijinal"
+# birlesiminde isiriyor.
+AMF_MIN_GENISLIK = 384
+AMF_MIN_YUKSEKLIK = 128
+
 
 def amf_qp_tavani(codec):
     """Bu kodlayicinin QP kaydiricisinin ust siniri."""
@@ -3066,6 +3076,25 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 cfg["upscale_blocked"] = True
                 cfg["source_resolution"] = f"{w}x{h}"
 
+        # AMD kodlayicilari cok kucuk kareyi reddediyor. Cikacak kare boyutunu
+        # burada (ana thread'de) belirleyip cfg'ye koyuyoruz ki dogrulama
+        # ffprobe'u tekrar calistirmak zorunda kalmasin.
+        if codec_v in AMF_CODECS:
+            if cfg["scale"] != "Orijinal" and SCALE_MAP.get(cfg["scale"]):
+                # Olcekleme uzun kenari sabitler; kisa kenar en-boy oranindan
+                # gelir. Kaynak orani bilinmiyorsa 16:9 varsayilir.
+                uzun = SCALE_MAP[cfg["scale"]]
+                w, h = self.get_video_resolution(cfg["input_file"])
+                if w and h:
+                    if w >= h:
+                        cfg["cikti_boyutu"] = (uzun, max(2, round(uzun * h / w)))
+                    else:
+                        cfg["cikti_boyutu"] = (max(2, round(uzun * w / h)), uzun)
+                else:
+                    cfg["cikti_boyutu"] = (uzun, round(uzun * 9 / 16))
+            else:
+                cfg["cikti_boyutu"] = self.get_video_resolution(cfg["input_file"])
+
         cfg["output_file"] = self._build_output_path(cfg)
         return cfg
 
@@ -3077,6 +3106,17 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             return ("Hata", f"Video dosyası bulunamadı:\n{cfg['input_file']}")
         if cfg["output_dir"] and not os.path.isdir(cfg["output_dir"]):
             return ("Hata", f"Çıkış klasörü bulunamadı:\n{cfg['output_dir']}")
+
+        # AMD donanim kodlayicisi cok kucuk kareyi kabul etmiyor. Onlemezsek
+        # kullanici yalnizca "encoder->Init() failed with error 5" goruyor.
+        if cfg["codec_v"] in AMF_CODECS and cfg.get("cikti_boyutu"):
+            w, h = cfg["cikti_boyutu"]
+            if w and h and (w < AMF_MIN_GENISLIK or h < AMF_MIN_YUKSEKLIK):
+                return ("Görüntü AMD Kodlayıcı İçin Çok Küçük",
+                        f"Çıkacak kare {w}x{h}. AMD donanım kodlayıcısı en az "
+                        f"{AMF_MIN_GENISLIK}x{AMF_MIN_YUKSEKLIK} ister ve bunun "
+                        "altında hata verip durur.\n\nDaha yüksek bir çözünürlük "
+                        "seçin ya da bu dosyayı VP9 (CPU) sekmesiyle dönüştürün.")
 
         if cfg["is_remux"]:
             if not cfg["sub_file"]:
