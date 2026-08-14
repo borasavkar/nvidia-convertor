@@ -115,6 +115,40 @@ def tools_usable(ffmpeg_bin, ffprobe_bin):
     return True
 
 
+def encoder_calisiyor_mu(encoder, ffmpeg_bin=None):
+    """
+    Bir donanim kodlayicisinin BU makinede gercekten calistigini olcer.
+
+    Kodlayici listesinde gorunmek yetmez: ffmpeg AMD'li bir makinede de
+    hevc_nvenc'i listeler, ama calistirinca "Cannot load nvcuda.dll" der.
+    Tek guvenilir yontem kucuk bir gercek kodlama denemesi (~0.1-0.3 sn).
+
+    DIKKAT: kare boyutu DENEME_BOYUTU'ndan kucuk olmamali; olculdu, 256x256'da
+    hevc_amf/av1_amf "encoder->Init() failed with error 5" verip calisan bir
+    karti "yok" gosteriyor.
+    """
+    try:
+        sonuc = subprocess.run(
+            [ffmpeg_bin or FFMPEG_BIN, "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", f"testsrc2=s={DENEME_BOYUTU}:r=30:d=0.2",
+             "-c:v", encoder, "-f", "null", "-"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        )
+        return sonuc.returncode == 0
+    except Exception:
+        return False
+
+
+def donanim_bul(ffmpeg_bin=None):
+    """
+    Hangi markalarin donanim kodlayicisi kullanilabilir? SAF OLCUM.
+    {marka: True/False} dondurur.
+    """
+    return {marka: encoder_calisiyor_mu(bilgi["deneme"], ffmpeg_bin)
+            for marka, bilgi in DONANIM.items()}
+
+
 def resolve_tools(tercih_dizin=None):
     """FFMPEG_BIN / FFPROBE_BIN global degerlerini yeniden cozer."""
     global FFMPEG_BIN, FFPROBE_BIN
@@ -224,6 +258,56 @@ SCALE_MAP = {
 # level 5.1 denendiginde 40194 kbps'te tavan olusuyordu.
 HEVC_LEVEL = "6.2"    # 4.1 (auto) -> tavan pratikte kalkar
 H264_LEVEL = "5.1"    # 4.2 (auto) -> tavan kalkar; 6.2 ile ayni sonucu verdi
+
+# AMD'de (AMF) level tavani YOK: olculdu, "-level 153" ve "-level 186" ile
+# ciktilar BAYT BAYT ayni (qp=12'de 12304841 bayt). AMF level'i yalnizca
+# bitstream'e yaziyor, bitrate'i kisitlamiyor. Bu yuzden AMF dallarina
+# -level EKLENMEZ; AV1/NVENC'te oldugu gibi dokunmamak dogrusu.
+
+# =======================================================
+# DONANIM (VENDOR) TANIMLARI
+# =======================================================
+# Uygulama tek bir marka icin degil, MAKINEDE NE VARSA onun icin calisir.
+# Kartlar degisir: bu proje bir gun icinde RTX 5060 Ti'dan RX 9070 XT'ye
+# gecti ve NVENC sekmelerinin hepsi "Cannot load nvcuda.dll" ile coktu.
+# O yuzden marka acilista OLCULUR (bkz. encoder_calisiyor_mu), varsayilmaz.
+
+NVIDIA, AMD = "nvidia", "amd"
+
+DONANIM = {
+    NVIDIA: {
+        "ad": "NVIDIA",
+        # Markanin varligini olcmek icin denenecek kodlayici. Biri calisiyorsa
+        # o markanin surucusu yuklu demektir.
+        "deneme": "hevc_nvenc",
+        "sekmeler": ("AV1 (Standart)", "H.265 (Standart)", "H.264 (Standart)",
+                     "⚡ SAF CUDA"),
+    },
+    AMD: {
+        "ad": "AMD",
+        "deneme": "hevc_amf",
+        "sekmeler": ("AV1 (AMD)", "H.265 (AMD)", "H.264 (AMD)"),
+    },
+}
+
+# Markadan bagimsiz sekmeler: donanim olmasa da calisirlar, HIC gizlenmezler.
+# (VP9 tamamen CPU'da kodlar; sadece-altyazi hic kodlama yapmaz.)
+DONANIMSIZ_SEKMELER = ("VP9 (Google VOD)", "💬 SADECE ALTYAZI")
+
+# Algilama denemesinin kare boyutu. 256x256 KULLANILAMAZ: olculdu, hevc_amf ve
+# av1_amf o boyutta "encoder->Init() failed with error 5" veriyor ve calisan
+# bir kart "yok" gorunuyordu. 640x360 uc markada da sorunsuz.
+DENEME_BOYUTU = "640x360"
+
+# AMF kalite onayarlari (-quality). NVENC'in p1..p7'sinin karsiligi.
+AMF_QUALITY_VALUES = ["quality", "balanced", "speed", "high_quality"]
+AMF_CODECS = ("hevc_amf", "av1_amf", "h264_amf")
+
+# AMD sekmelerinin QP araliklari HENUZ OLCULMEDI. NVENC tablolarini kopyalamak
+# yanlis olurdu: AMF'nin kalite modeli farkli (-rc cqp + qp_i/qp_p, -cq yok).
+# Bu bayrak True olana kadar arayuz "onerilen aralik" yerine "olculmedi" der;
+# uydurma bir tavsiye vermektense sessiz kalmak dogru.
+AMF_CQ_OLCULDU = False
 
 # Dosya secimi ve surukle-birak ayni listeyi kullanir (birbirinden sapmasin diye)
 VIDEO_EXTS = ('.mp4', '.mkv', '.avi', '.mov', '.ts', '.vob', '.y4m',
@@ -429,7 +513,9 @@ def build_preview_command(cfg, probes, cikti_png, zaman=None):
     Tek karelik onizleme komutu. Kodlama komutuyla AYNI filtre zincirini
     kullanir (build_filters), boylece onizleme ciktiyi temsil eder.
     """
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-hwaccel", "cuda"]
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    if cfg.get("hwaccel"):
+        cmd.extend(["-hwaccel", cfg["hwaccel"]])
     if probes.get("cuda_frames"):
         cmd.extend(["-hwaccel_output_format", "cuda"])
     bas = parse_time(cfg.get("trim_start")) or 0.0
@@ -491,7 +577,16 @@ def build_command(cfg, probes):
     if is_pure_cuda and sub_file:
         notes.append("⚠️ UYARI: Saf CUDA modunda donanımsal altyazı desteği yoktur. Altyazı ATLANDI!")
 
-    cmd = ["ffmpeg", "-hwaccel", "cuda"]
+    # ---------- DONANIMSAL COZUCU ----------
+    # -hwaccel MARKAYA BAGLIDIR ve yanlisi isi hic baslatmaz: olculdu, AMD
+    # makinede "-hwaccel cuda" verilince ffmpeg "Cannot load nvcuda.dll /
+    # Device creation failed" deyip cikti dosyasini HIC olusturmuyor. Eskiden
+    # bu bayrak komutun basina sabit yazilmisti; kart degisince VP9 dahil her
+    # sekme kiriliyordu.
+    cmd = ["ffmpeg"]
+    hwaccel = cfg.get("hwaccel", "")
+    if hwaccel:
+        cmd.extend(["-hwaccel", hwaccel])
     if cuda_frames:
         cmd.extend(["-hwaccel_output_format", "cuda"])
     cmd.extend(trim_args(cfg))
@@ -563,6 +658,34 @@ def build_command(cfg, probes):
             cmd.extend(["-pix_fmt", "yuv420p"])
         cmd.extend(["-temporal-aq", "1" if cfg["use_temporal_aq"] else "0"])
 
+    elif codec_v in AMF_CODECS:
+        # AMD (AMF) NVENC'ten TAMAMEN farkli bir kalite modeli kullanir:
+        #   NVENC: -rc vbr + -cq:v (tek kadran) + -preset p1..p7
+        #   AMF  : -rc cqp + ayri -qp_i/-qp_p (0-51) + -quality
+        # Kaydiricinin degeri dogrudan QP olarak gecer; olcekleme olculdu ve
+        # dogrusal: qp12 -> 19688 kbps, qp36 -> 1949 kbps (1080p, temiz iniş).
+        cmd.extend(["-rc", "cqp", "-qp_i", cq_val, "-qp_p", cq_val,
+                    "-quality", cfg.get("amf_quality", "quality")])
+        if codec_v == "h264_amf":
+            # H.264'te B kareleri ayri bir QP alir; verilmezse varsayilan
+            # degeri I/P ile uyusmuyor.
+            cmd.extend(["-qp_b", cq_val])
+        # AMF -level'i yalnizca bitstream'e yazar, bitrate'i KISITLAMAZ
+        # (olculdu: level 153 ile 186 bayt bayt ayni cikti). NVENC'teki
+        # tavan kusuru burada YOK, o yuzden -level eklenmiyor.
+        #
+        # AMF H.264 10-bit ALMAZ: "10-bit input video is not supported by AMF
+        # H264 encoder" deyip isi hic baslatmiyor. ffmpeg'in kendi
+        # "Supported pixel formats" listesi p010le yaziyor ama YANLIS; bu
+        # yalnizca calistirarak ogrenilebiliyor.
+        amf_10bit = ten_bit and codec_v != "h264_amf"
+        cmd.extend(["-pix_fmt", "p010le" if amf_10bit else "nv12"])
+        notes.append("🔴 AMD (AMF) kodlayıcısı kullanılıyor.")
+        if ten_bit and codec_v == "h264_amf":
+            notes.append("ℹ️ AMD H.264 kodlayıcısı 10-bit desteklemiyor; "
+                         "8-bit olarak kodlanıyor. 10-bit için AV1 veya "
+                         "H.265 sekmesini kullanın.")
+
     # Level bilgisi loga yazilir: uyumluluk sorunu yasandiginda kullanicinin
     # sebebi gorebilmesi icin (level CQ'dan bagimsiz olarak bitstream'e girer).
     if codec_v in ("hevc_nvenc", "h264_nvenc"):
@@ -571,7 +694,11 @@ def build_command(cfg, probes):
                      "kaldırıldı, düşük CQ'da kalite gerçekten artar. Çok eski "
                      "cihazlarda oynatma sorunu çıkarsa sebebi budur.")
 
-    if cfg["use_multipass"]:
+    # -multipass NVENC'e OZEL bir secenek. AMF'ye verilirse ffmpeg isi
+    # patlatmiyor ama "has not been used for any stream" deyip SESSIZCE yok
+    # sayiyor: kullanici ayari actigini sanir, hicbir etkisi olmaz.
+    # (-g ise genel bir AVCodecContext secenegi, her kodlayicida gecerli.)
+    if cfg["use_multipass"] and codec_v.endswith("_nvenc"):
         cmd.extend(["-multipass", "2"])
     if cfg["use_long_gop"]:
         cmd.extend(["-g", "300"])
@@ -923,6 +1050,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # --- KUYRUK VE KALICI AYARLAR ---
         self.job_queue = []          # collect_config() anlik goruntuleri
         self.cq_refreshers = {}      # sekme adi -> CQ etiketini tazeleyen callback
+        # {marka: True/False} - acilista OLCULUR (bkz. donanimi_uygula).
+        # Tarama bitene kadar bos: hicbir sey varsayilmaz.
+        self.donanim = {}
         self.last_video_dir = ""
         self.last_sub_dir = ""
         # Cikti HER ZAMAN kaynak videonun yanina yazilir. Degisken korunuyor
@@ -1112,6 +1242,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.create_tab("AV1 (Standart)", "av1_nvenc")
         self.create_tab("H.265 (Standart)", "hevc_nvenc")
         self.create_tab("H.264 (Standart)", "h264_nvenc")
+        self.create_amd_tab("AV1 (AMD)", "av1_amf")
+        self.create_amd_tab("H.265 (AMD)", "hevc_amf")
+        self.create_amd_tab("H.264 (AMD)", "h264_amf")
         self.create_vp9_tab("VP9 (Google VOD)")
         self.create_cuda_tab("⚡ SAF CUDA")
         self.create_remux_tab("💬 SADECE ALTYAZI")
@@ -1174,6 +1307,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # FFmpeg durumu: ayarlardaki klasör yüklendikten SONRA karara bağlanır.
         # Bulunamazsa kullanıcıya doğrudan klasör seçme seçeneği sunulur.
         self.check_ffmpeg()
+
+        # Donanım taraması EN SON: doğru ffmpeg ikilisi belli olduktan sonra
+        # ölçüm yapılmalı. ~0.3 sn sürer (ölçüldü: NVENC 74 ms, AMF 243 ms).
+        self.donanimi_uygula()
 
     # =======================================================
     # UI: RENK AYARLARI FONKSİYONLARI
@@ -1359,6 +1496,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         "vp9_threads": ["Auto", "2", "4", "8", "16", "32"],
         "sub_lang": list(SUB_DIL_SECENEKLERI),
         "sub_charenc": list(SUB_CHARENC_SECENEKLERI),
+        "amf_quality": AMF_QUALITY_VALUES,
     }
 
     def _create_audio_card(self, parent, tab_vars, pady):
@@ -1531,6 +1669,17 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     def _update_cq_display(self, codec, tab_vars, lbl_cq_title, lbl_cq_status, slider_cq, label_prefix="CQ (Kalite)"):
         v = int(float(tab_vars["cq"].get()))
         lbl_cq_title.configure(text=f"{label_prefix}: {v}")
+
+        # AMD icin onerilen aralik HENUZ OLCULMEDI. NVENC tablosunu gostermek
+        # yanlis yonlendirme olurdu (farkli kalite modeli), o yuzden renk/oneri
+        # yerine durumu durustce yaziyoruz.
+        if codec in AMF_CODECS and not AMF_CQ_OLCULDU:
+            lbl_cq_status.configure(
+                text="ℹ️ Önerilen aralık AMD için henüz ölçülmedi (düşük = büyük dosya)",
+                text_color="#AAAAAA")
+            slider_cq.configure(progress_color="#777777")
+            return
+
         current_scale = tab_vars["scale"].get()
 
         min_cq, max_cq = get_cq_range(codec, current_scale)
@@ -1704,6 +1853,101 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # dizildiginde sekme yuksekligini tek basina belirliyordu.
         kart_salter = self._create_toggles_card(main_grid, tab_vars, "🛠️ Kontrol Şalterleri",
                                                 "Taraklanmayı Gider (bwdif)")
+        kart_salter.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(10, 0))
+
+    # =======================================================
+    # AMD (AMF) SEKMELERİ
+    # =======================================================
+    def create_amd_tab(self, tab_name, codec_name):
+        """
+        AMD donanim kodlayicisi sekmesi. Yapisi NVENC sekmeleriyle ayni tutuldu
+        (kuyruk, klasor modu, altyazi, metadata hepsi ortak calissin diye);
+        farkli olan yalnizca kodlayici kartinin icerigidir:
+            NVENC: -preset p1..p7 + -cq:v
+            AMF  : -quality quality/balanced/speed + -qp_i/-qp_p
+        """
+        self.tabview.add(tab_name)
+        frame = self.tabview.tab(tab_name)
+
+        is_av1 = codec_name == "av1_amf"
+        tab_vars = self._nvenc_tab_vars("mkv" if is_av1 else "mp4", 24)
+        tab_vars["codec"] = codec_name
+        # NVENC'e ozel salterler AMF'de yok; kart kurulurken sorulmasin diye
+        # degiskenleri birakiyoruz ama komuta girmiyorlar (bkz. build_command).
+        tab_vars["amf_quality"] = ctk.StringVar(value="quality")
+        tab_vars.update(self._tab_meta(is_pure_cuda=False, is_vp9=False,
+                                       accent=("#c0392b", "#922b21", "white")))
+        self.tabs[tab_name] = tab_vars
+
+        main_grid = ctk.CTkFrame(frame, fg_color="transparent")
+        main_grid.pack(fill="both", expand=True)
+        main_grid.columnconfigure(0, weight=1)
+        main_grid.columnconfigure(1, weight=1)
+
+        col_left = ctk.CTkFrame(main_grid, fg_color="transparent")
+        col_left.grid(row=0, column=0, sticky="nsew", padx=5)
+
+        def on_cq_change(*args):
+            self._update_cq_display(codec_name, tab_vars, lbl_cq_title,
+                                    lbl_cq_status, slider_cq, "QP (Kalite)")
+
+        card_format = self.create_card(col_left, "📦 Format Konteyner")
+        card_format.pack(fill="x", pady=(0, 10))
+        ReadOnlyComboBox(card_format, variable=tab_vars["container"],
+                         values=["mkv", "mp4"]).pack(fill="x", padx=15, pady=(0, 10))
+
+        self._create_audio_card(col_left, tab_vars, pady=(0, 10))
+
+        card_amf = self.create_card(col_left, "🔴 AMD Motoru (AMF)")
+        card_amf.pack(fill="x", pady=10)
+        ctk.CTkLabel(card_amf, text="Kalite Ön Ayarı:").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_amf, variable=tab_vars["amf_quality"],
+                         values=AMF_QUALITY_VALUES).pack(fill="x", padx=15, pady=(0, 15))
+
+        lbl_cq_title = ctk.CTkLabel(card_amf, text=f"QP (Kalite): {tab_vars['cq'].get()}",
+                                    font=("Arial", 13, "bold"))
+        lbl_cq_status = ctk.CTkLabel(card_amf, text="", font=("Arial", 11, "italic"))
+        lbl_cq_title.pack(anchor="w", padx=15, pady=(5, 0))
+        lbl_cq_status.pack(anchor="w", padx=15, pady=(0, 5))
+        slider_cq = ctk.CTkSlider(card_amf, from_=0, to=51, number_of_steps=51,
+                                  variable=tab_vars["cq"], command=on_cq_change)
+        slider_cq.pack(fill="x", padx=15, pady=(0, 15))
+
+        col_right = ctk.CTkFrame(main_grid, fg_color="transparent")
+        col_right.grid(row=0, column=1, sticky="nsew", padx=5)
+
+        card_res = self.create_card(col_right, "📐 Çözünürlük")
+        card_res.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(card_res, text="Akıllı Ölçeklendirme (Lanczos):").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_res, variable=tab_vars["scale"], values=self.SCALE_VALUES,
+                         command=lambda _c: on_cq_change()).pack(fill="x", padx=15, pady=(0, 15))
+
+        on_cq_change()
+        self.cq_refreshers[tab_name] = on_cq_change
+
+        self._create_metadata_card(col_right, tab_vars)
+
+        # NVENC'e ozgu salterler (temporal-aq, multipass, b_ref_mode) AMF'de
+        # karsiliksiz; yalnizca gercekten uygulanabilenler gosteriliyor.
+        kart_salter = self.create_card(main_grid, "🛠️ Kontrol Şalterleri")
+        kafes = ctk.CTkFrame(kart_salter, fg_color="transparent")
+        kafes.pack(fill="x", padx=10, pady=(0, 10))
+        for i in range(3):
+            kafes.grid_columnconfigure(i, weight=1, uniform="salter")
+        for sira, (metin, degisken, aciklama) in enumerate([
+            ("Taraklanmayı Gider (bwdif)", tab_vars["bwdif"],
+             "Tarak izlerini giderir (CPU'da çalışır)."),
+            ("Kaynaktan büyütme yapma", tab_vars["no_upscale"],
+             "Büyütme yapmaz, biti boşa harcamaz."),
+            ("10-bit kodla (Main 10)", tab_vars["ten_bit"],
+             "Bantlanmayı azaltır; kapalıysa uyum artar."),
+        ]):
+            hucre = ctk.CTkFrame(kafes, fg_color="transparent")
+            hucre.grid(row=0, column=sira, sticky="nsew", padx=4, pady=(4, 2))
+            ctk.CTkCheckBox(hucre, text=metin, variable=degisken).pack(anchor="w")
+            ctk.CTkLabel(hucre, text=aciklama, font=("Arial", 10, "italic"),
+                         text_color="#8A8A8A", justify="left", anchor="w",
+                         height=16, wraplength=260).pack(anchor="w", padx=(26, 0), pady=(1, 0))
         kart_salter.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(10, 0))
 
     # =======================================================
@@ -2286,6 +2530,58 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         if cevap:
             self.select_ffmpeg_dir()
 
+    # =======================================================
+    # DONANIMA GÖRE SEKME GÖRÜNÜRLÜĞÜ
+    # =======================================================
+    def donanimi_uygula(self):
+        """
+        Makinede hangi marka varsa yalnizca onun sekmelerini birakir.
+
+        Neden gerekli: kodlayan sekmelerin hepsi bir markaya bagli. NVIDIA
+        karti sokulmus bir makinede uygulama NVENC sekmelerini gostermeye
+        devam ederse kullanici "Dönüştür"e basana kadar sorunu fark etmiyor,
+        sonra ham "Cannot load nvcuda.dll" hatasi aliyor. Bu birebir yasandi.
+
+        Marka SORULMAZ, OLCULUR (bkz. donanim_bul): kart degisince uygulama
+        kendini ayarlar, kullanicidan bir sey yapmasi beklenmez.
+        """
+        if not self.ffmpeg_hazir:
+            self.log("ℹ️ FFmpeg hazır olmadığı için donanım taraması atlandı.")
+            return
+
+        self.donanim = donanim_bul()
+        bulunan = [DONANIM[m]["ad"] for m, v in self.donanim.items() if v]
+        self.log("🔎 Donanım taraması: " +
+                 (", ".join(bulunan) + " bulundu" if bulunan
+                  else "donanımsal kodlayıcı bulunamadı"))
+
+        silinecek = []
+        for marka, var_mi in self.donanim.items():
+            if not var_mi:
+                silinecek.extend(DONANIM[marka]["sekmeler"])
+
+        for ad in silinecek:
+            if ad not in self.tabs:
+                continue
+            try:
+                self.tabview.delete(ad)
+            except Exception:
+                continue
+            self.tabs.pop(ad, None)
+            self.cq_refreshers.pop(ad, None)
+
+        if silinecek:
+            self.log(f"   {len(silinecek)} sekme gizlendi (donanımı yok): "
+                     + ", ".join(silinecek))
+        if not bulunan:
+            self.log("   ⚠️ Yalnızca CPU (VP9) ve altyazı modu kullanılabilir.")
+
+        # Acik sekme silinmis olabilir; kalan gecerli bir sekmeye gec.
+        kalan = [ad for ad in self.tabs]
+        if kalan and self.tabview.get() not in self.tabs:
+            self.tabview.set(kalan[0])
+        self.on_tab_change()
+
     def _refresh_all_cq_displays(self):
         """Ayarlar yuklendikten sonra CQ etiket/renklerini tazeler."""
         for fn in self.cq_refreshers.values():
@@ -2643,6 +2939,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "no_upscale": tab_vars["no_upscale"].get() if "no_upscale" in tab_vars else False,
             "ten_bit": tab_vars["ten_bit"].get() if "ten_bit" in tab_vars else True,
             "interp_algo": tab_vars["interp_algo"].get() if "interp_algo" in tab_vars else "Otomatik",
+            "amf_quality": oku("amf_quality", "quality"),
             "output_dir": self.output_dir.get().strip(),
             "name_with_cq": self.name_with_cq.get(),
             "trim_start": self.trim_start.get(),
@@ -2674,6 +2971,21 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             # elle duzenlenmis bir ayar dosyasi kutuya sokabilir.
             if cfg["container"] not in ("mkv", "mp4"):
                 cfg["container"] = "mkv"
+
+        # ---- DONANIMSAL COZUCU SECIMI ----
+        # Kodlayicinin markasi cozucunun de markasini belirler. VP9 (CPU
+        # kodlayici) icin marka onemsiz: makinede ne varsa onun cozucusu
+        # kullanilir, hicbiri yoksa yazilim cozucusune dusulur.
+        if codec_v in AMF_CODECS:
+            cfg["hwaccel"] = "d3d11va"
+        elif codec_v.endswith("_nvenc"):
+            cfg["hwaccel"] = "cuda"
+        elif self.donanim.get(NVIDIA):
+            cfg["hwaccel"] = "cuda"
+        elif self.donanim.get(AMD):
+            cfg["hwaccel"] = "d3d11va"
+        else:
+            cfg["hwaccel"] = ""
 
         cfg["codec_a"] = "libopus" if cfg["container"] in ("mkv", "webm") else "aac"
         cfg["copy_audio"] = cfg["a_bitrate"].startswith("Kopyala")
