@@ -664,6 +664,22 @@ def build_command(cfg, probes):
         #   AMF  : -rc cqp + ayri -qp_i/-qp_p (0-51) + -quality
         # Kaydiricinin degeri dogrudan QP olarak gecer; olcekleme olculdu ve
         # dogrusal: qp12 -> 19688 kbps, qp36 -> 1949 kbps (1080p, temiz iniş).
+        #
+        # NEDEN qvbr DEGIL - bu SORU BIR KEZ OLCULDU, tekrar acilmasin:
+        # AMF'de "-qvbr_quality_level" var ve teoride -cq:v'nin karsiligi.
+        # Ustelik ffmpeg cqp'de "VBAQ is not supported by cqp Rate Control
+        # Method, automatically disabled" diye uyariyor. Ikisi de qvbr'yi
+        # dogru secim gibi gosteriyor. OLCUM TERSINI SOYLEDI (RX 9070 XT,
+        # 720p detayli kaynak, VMAF, ayni bitrate ~20 Mbps):
+        #     cqp  -> 92.06        qvbr -> 86.33
+        # 5.7 VMAF puani fark. VBAQ'in kapanmasi onemsiz cikti cunku bu
+        # surucude VBAQ'in ACIKKEN de hicbir etkisi yok: -vbaq, -preanalysis,
+        # -pa_taq_mode, -pa_caq_strength, -preencode BESI DE bayt bayt ayni
+        # cikti uretiyor (7240054 bayt). Bayraklar kabul ediliyor ama surucu
+        # uygulamiyor. O yuzden bu ailenin hicbiri komuta eklenmiyor.
+        #
+        # qvbr'nin yonu de terstir (yuksek = iyi kalite), yani kaydiriciyi
+        # oldugu gibi baglamak kullaniciyi yanlis yone iterdi.
         cmd.extend(["-rc", "cqp", "-qp_i", cq_val, "-qp_p", cq_val,
                     "-quality", cfg.get("amf_quality", "quality")])
         if codec_v == "h264_amf":
