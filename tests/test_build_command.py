@@ -353,11 +353,63 @@ def test_amd_quality_onayari_komuta_girer():
     assert val_of(cmd, "-quality") == "balanced"
 
 
-def test_amd_h264te_b_kare_qp_si_da_verilir():
-    cmd, _ = nv.build_command(amd_cfg(codec_v="h264_amf", cq_val="30"), probes())
-    assert val_of(cmd, "-qp_b") == "30"
+def test_amd_b_kare_qp_si_yalnizca_destekleyen_kodeklere():
+    """
+    h264_amf ve av1_amf'te -qp_b VAR, hevc_amf'te YOK. Olmayanina vermek
+    ffmpeg'in "not used for any stream" uyarisini uretir.
+    """
+    for codec in ("h264_amf", "av1_amf"):
+        cmd, _ = nv.build_command(amd_cfg(codec_v=codec, cq_val="30"), probes())
+        assert val_of(cmd, "-qp_b") == "30", codec
     cmd, _ = nv.build_command(amd_cfg(codec_v="hevc_amf"), probes())
     assert "-qp_b" not in cmd
+
+
+# --------------------------------------------------- AMD QP olcekleri/tablolari
+def test_av1_amf_qp_olcegi_255():
+    """
+    OLCULDU: av1_amf'in QP olcegi 0-255, digerleri 0-51. Kaydiriciyi 51'de
+    tutunca AV1 kullanilamaz hale geliyordu: qp16 ile qp51 arasinda VMAF
+    99.99 -> 99.98, bitrate 373 -> 157 Mbps. Yani kadran hicbir sey yapmiyordu.
+    """
+    assert nv.amf_qp_tavani("av1_amf") == 255
+    assert nv.amf_qp_tavani("hevc_amf") == 51
+    assert nv.amf_qp_tavani("h264_amf") == 51
+
+
+@pytest.mark.parametrize("codec", ["hevc_amf", "h264_amf", "av1_amf"])
+@pytest.mark.parametrize("scale", ["240p", "360p", "480p", "720p", "1080p", "1440p", "4K"])
+def test_amd_varsayilan_qp_araligin_ortasinda(codec, scale):
+    """NVENC tablosuyla ayni kural: varsayilan onerilen araligin ortasi."""
+    lo, hi = nv.get_cq_range(codec, scale)
+    varsayilan = nv.get_cq_default(codec, scale)
+    assert lo <= varsayilan <= hi
+    assert abs(varsayilan - (lo + hi) / 2) <= 0.5
+
+
+@pytest.mark.parametrize("codec", ["hevc_amf", "h264_amf", "av1_amf"])
+def test_amd_qp_araliklari_kendi_olceginin_icinde(codec):
+    tavan = nv.amf_qp_tavani(codec)
+    for scale in ("240p", "480p", "1080p", "4K", "Orijinal"):
+        lo, hi = nv.get_cq_range(codec, scale)
+        assert 0 < lo < hi <= tavan, (codec, scale, lo, hi)
+
+
+def test_amd_tablolari_nvenc_tablosundan_KOPYA_DEGIL():
+    """
+    Olculdu: ayni QP iki markada ayni kaliteyi vermiyor. HEVC 1080p'de
+    NVENC (28,34) iken AMF (31,35). Biri digerine kopyalanirsa bu test duser.
+    """
+    assert nv.get_cq_range("hevc_amf", "1080p") != nv.get_cq_range("hevc_nvenc", "1080p")
+    assert nv.get_cq_range("h264_amf", "1080p") != nv.get_cq_range("h264_nvenc", "1080p")
+    # AV1 zaten farkli olcekte
+    assert nv.get_cq_range("av1_amf", "1080p")[0] > 100
+
+
+def test_amd_yuksek_cozunurlukte_qp_araligi_yukselir():
+    """Olculen egilim: cozunurluk arttikca ayni kalite daha yuksek QP'de saglaniyor."""
+    for codec in ("hevc_amf", "h264_amf", "av1_amf"):
+        assert nv.get_cq_range(codec, "480p")[0] <= nv.get_cq_range(codec, "1080p")[0], codec
 
 
 @pytest.mark.parametrize("ten_bit,beklenen", [(True, "p010le"), (False, "nv12")])

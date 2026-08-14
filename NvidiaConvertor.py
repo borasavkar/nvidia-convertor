@@ -211,7 +211,32 @@ CQ_RANGES = {
         "4K": (12, 18), "1440p": (21, 27), "1080p": (28, 34), "720p": (29, 35),
         "480p": (30, 36), "360p": (33, 39), "240p": (34, 40),
         "default": (28, 34)
-    }
+    },
+    # --- AMD (AMF) ---
+    # OLCULDU 2026-08-14: ham 1080p50 kaynak (test.y4m), her cozunurluk icin
+    # lanczos ile indirilip KAYIPSIZ referansa cevrildi, VMAF ile karsilastirildi.
+    # Alt sinir = VMAF 96'ya, ust sinir = VMAF 90'a denk gelen QP.
+    # NVENC tablolari KOPYALANMADI: ayni QP iki markada ayni kaliteyi vermiyor
+    # (ornek: HEVC 1080p'de NVENC 28-34, AMF 31-35).
+    # 240p/360p/1440p/4K satirlari olculen ucun egiminden TURETILDI (kaynak
+    # 1080p oldugu icin buyuterek olcmek sahte kolaylik yaratirdi).
+    "hevc_amf": {
+        "4K": (33, 37), "1440p": (32, 36), "1080p": (31, 35), "720p": (31, 34),
+        "480p": (30, 33), "360p": (29, 32), "240p": (28, 31),
+        "default": (31, 35)
+    },
+    "h264_amf": {
+        "4K": (33, 37), "1440p": (32, 36), "1080p": (31, 35), "720p": (30, 34),
+        "480p": (29, 32), "360p": (28, 31), "240p": (27, 30),
+        "default": (31, 35)
+    },
+    # AV1 AMF'nin QP olcegi 0-255 (digerleri 0-51) - bkz. AMF_QP_TAVANI.
+    "av1_amf": {
+        "4K": (156, 172), "1440p": (150, 166), "1080p": (144, 160),
+        "720p": (135, 153), "480p": (125, 146), "360p": (120, 141),
+        "240p": (115, 136),
+        "default": (144, 160)
+    },
 }
 
 # Varsayilanlar ilgili araligin ortasidir (tablodaki mevcut degerlerin kurali).
@@ -226,7 +251,14 @@ CQ_DEFAULTS = {
                    "360p": 20, "240p": 18, "default": 31},
     "h264_nvenc": {"4K": 29, "1440p": 27, "1080p": 26, "720p": 21, "480p": 18,
                    "360p": 15, "240p": 13, "default": 26},
-    "libvpx-vp9": {"4K": 15, "1440p": 24, "1080p": 31, "720p": 32, "480p": 33, "360p": 36, "240p": 37, "default": 31}
+    "libvpx-vp9": {"4K": 15, "1440p": 24, "1080p": 31, "720p": 32, "480p": 33, "360p": 36, "240p": 37, "default": 31},
+    # AMD: araligin ortasi (NVENC tablosunun kurali)
+    "hevc_amf": {"4K": 35, "1440p": 34, "1080p": 33, "720p": 32, "480p": 32,
+                 "360p": 31, "240p": 30, "default": 33},
+    "h264_amf": {"4K": 35, "1440p": 34, "1080p": 33, "720p": 32, "480p": 31,
+                 "360p": 30, "240p": 29, "default": 33},
+    "av1_amf": {"4K": 164, "1440p": 158, "1080p": 152, "720p": 144, "480p": 136,
+                "360p": 131, "240p": 126, "default": 152},
 }
 
 SCALE_MAP = {
@@ -303,11 +335,21 @@ DENEME_BOYUTU = "640x360"
 AMF_QUALITY_VALUES = ["quality", "balanced", "speed", "high_quality"]
 AMF_CODECS = ("hevc_amf", "av1_amf", "h264_amf")
 
-# AMD sekmelerinin QP araliklari HENUZ OLCULMEDI. NVENC tablolarini kopyalamak
-# yanlis olurdu: AMF'nin kalite modeli farkli (-rc cqp + qp_i/qp_p, -cq yok).
-# Bu bayrak True olana kadar arayuz "onerilen aralik" yerine "olculmedi" der;
-# uydurma bir tavsiye vermektense sessiz kalmak dogru.
-AMF_CQ_OLCULDU = False
+# AMF'de B-kare QP'sini AYRI alan kodlayicilar. hevc_amf'te boyle bir secenek
+# YOK; olmayanina vermek "not used for any stream" uyarisi uretir.
+AMF_QP_B_KODEKLERI = ("av1_amf", "h264_amf")
+
+# QP olcegi kodege gore DEGISIR ve bu sessizce yanlis calisan bir arayuz uretir:
+# av1_amf 0-255, digerleri 0-51. Kaydiriciyi hepsinde 0-51 tutunca AV1'de en
+# yuksek deger bile kayipsiza yakin kaliyordu; olculdu, qp16 ile qp51 arasinda
+# VMAF 99.99 -> 99.98 (373 Mbps -> 157 Mbps), yani kadran hicbir sey yapmiyordu.
+AMF_QP_TAVANI = {"av1_amf": 255}
+AMF_QP_TAVANI_VARSAYILAN = 51
+
+
+def amf_qp_tavani(codec):
+    """Bu kodlayicinin QP kaydiricisinin ust siniri."""
+    return AMF_QP_TAVANI.get(codec, AMF_QP_TAVANI_VARSAYILAN)
 
 # Dosya secimi ve surukle-birak ayni listeyi kullanir (birbirinden sapmasin diye)
 VIDEO_EXTS = ('.mp4', '.mkv', '.avi', '.mov', '.ts', '.vob', '.y4m',
@@ -682,9 +724,9 @@ def build_command(cfg, probes):
         # oldugu gibi baglamak kullaniciyi yanlis yone iterdi.
         cmd.extend(["-rc", "cqp", "-qp_i", cq_val, "-qp_p", cq_val,
                     "-quality", cfg.get("amf_quality", "quality")])
-        if codec_v == "h264_amf":
-            # H.264'te B kareleri ayri bir QP alir; verilmezse varsayilan
-            # degeri I/P ile uyusmuyor.
+        if codec_v in AMF_QP_B_KODEKLERI:
+            # B kareleri ayri bir QP alir; verilmezse varsayilan degeri I/P ile
+            # uyusmuyor. hevc_amf'te bu secenek YOK, oraya verilmez.
             cmd.extend(["-qp_b", cq_val])
         # AMF -level'i yalnizca bitstream'e yazar, bitrate'i KISITLAMAZ
         # (olculdu: level 153 ile 186 bayt bayt ayni cikti). NVENC'teki
@@ -1686,16 +1728,6 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         v = int(float(tab_vars["cq"].get()))
         lbl_cq_title.configure(text=f"{label_prefix}: {v}")
 
-        # AMD icin onerilen aralik HENUZ OLCULMEDI. NVENC tablosunu gostermek
-        # yanlis yonlendirme olurdu (farkli kalite modeli), o yuzden renk/oneri
-        # yerine durumu durustce yaziyoruz.
-        if codec in AMF_CODECS and not AMF_CQ_OLCULDU:
-            lbl_cq_status.configure(
-                text="ℹ️ Önerilen aralık AMD için henüz ölçülmedi (düşük = büyük dosya)",
-                text_color="#AAAAAA")
-            slider_cq.configure(progress_color="#777777")
-            return
-
         current_scale = tab_vars["scale"].get()
 
         min_cq, max_cq = get_cq_range(codec, current_scale)
@@ -1886,7 +1918,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         frame = self.tabview.tab(tab_name)
 
         is_av1 = codec_name == "av1_amf"
-        tab_vars = self._nvenc_tab_vars("mkv" if is_av1 else "mp4", 24)
+        tab_vars = self._nvenc_tab_vars("mkv" if is_av1 else "mp4",
+                                        get_cq_default(codec_name, "Orijinal"))
         tab_vars["codec"] = codec_name
         # NVENC'e ozel salterler AMF'de yok; kart kurulurken sorulmasin diye
         # degiskenleri birakiyoruz ama komuta girmiyorlar (bkz. build_command).
@@ -1925,9 +1958,16 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         lbl_cq_status = ctk.CTkLabel(card_amf, text="", font=("Arial", 11, "italic"))
         lbl_cq_title.pack(anchor="w", padx=15, pady=(5, 0))
         lbl_cq_status.pack(anchor="w", padx=15, pady=(0, 5))
-        slider_cq = ctk.CTkSlider(card_amf, from_=0, to=51, number_of_steps=51,
+        # Kaydiricinin ust siniri KODEGE gore: av1_amf 0-255, digerleri 0-51.
+        # Hepsini 51'de tutmak AV1'i kullanilamaz yapiyordu (bkz. AMF_QP_TAVANI).
+        tavan = amf_qp_tavani(codec_name)
+        slider_cq = ctk.CTkSlider(card_amf, from_=0, to=tavan, number_of_steps=tavan,
                                   variable=tab_vars["cq"], command=on_cq_change)
         slider_cq.pack(fill="x", padx=15, pady=(0, 15))
+        ctk.CTkLabel(card_amf,
+                     text=f"* Bu kodlayıcının QP ölçeği 0-{tavan}. Düşük = büyük dosya.",
+                     font=("Arial", 10, "italic"), text_color="gray",
+                     anchor="w").pack(anchor="w", padx=15, pady=(0, 10))
 
         col_right = ctk.CTkFrame(main_grid, fg_color="transparent")
         col_right.grid(row=0, column=1, sticky="nsew", padx=5)
@@ -1935,8 +1975,15 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         card_res = self.create_card(col_right, "📐 Çözünürlük")
         card_res.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(card_res, text="Akıllı Ölçeklendirme (Lanczos):").pack(anchor="w", padx=15)
+
+        def on_scale_change(secim):
+            # Cozunurluk degisince QP'yi o cozunurlugun olculen ortasina cek -
+            # NVENC sekmeleriyle ayni davranis.
+            self._auto_set_cq(codec_name, secim, tab_vars, slider_cq,
+                              lbl_cq_title, lbl_cq_status, "QP (Kalite)")
+
         ReadOnlyComboBox(card_res, variable=tab_vars["scale"], values=self.SCALE_VALUES,
-                         command=lambda _c: on_cq_change()).pack(fill="x", padx=15, pady=(0, 15))
+                         command=on_scale_change).pack(fill="x", padx=15, pady=(0, 15))
 
         on_cq_change()
         self.cq_refreshers[tab_name] = on_cq_change
