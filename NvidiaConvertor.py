@@ -356,6 +356,20 @@ AMF_QP_TAVANI_VARSAYILAN = 51
 AMF_MIN_GENISLIK = 384
 AMF_MIN_YUKSEKLIK = 128
 
+# Bazi kaynak kodeklerinde DONANIM cozucusu zarar veriyor; bu sezgiye ters
+# oldugu icin olculerek bulundu (RX 9070 XT, 1080p, 3'er kosu, cikti bayt
+# bayt ayni):
+#     AV1  kaynak: d3d11va 2090 ms | yazilim 1431 ms   -> yazilim %46 hizli
+#     H264 kaynak: d3d11va  950 ms | yazilim 1042 ms   -> donanim %10 hizli
+# Sebep mimari: AMD'de GPU filtre zinciri kurulamadigi icin kareler zaten
+# sistem bellegine donmek zorunda. Donanim cozucu fazladan bir VRAM->RAM
+# kopyasi ekliyor; kolay cozulen akislarda (dav1d cok hizli) bu kopya baskin
+# geliyor, zor akislarda donanim kazaniyor.
+#
+# DIKKAT: yalnizca AV1 olculdu ve tek dosyayla. Cok yuksek bitrate'li bir
+# AV1'de donanim one gecebilir - listeyi genisletmeden once OLC.
+D3D11VA_ISTEMEYEN_KODEKLER = frozenset({"av1"})
+
 
 def amf_qp_tavani(codec):
     """Bu kodlayicinin QP kaydiricisinin ust siniri."""
@@ -2705,6 +2719,21 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         except Exception:
             return []
 
+    def get_video_codec(self, filepath):
+        """Kaynak videonun codec adini dondurur (bulunamazsa '')."""
+        try:
+            cmd = [FFPROBE_BIN, '-v', 'error', '-select_streams', 'v:0',
+                   '-show_entries', 'stream=codec_name',
+                   '-of', 'default=noprint_wrappers=1:nokey=1', filepath]
+            result = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            vals = [s.strip() for s in result.stdout.splitlines() if s.strip()]
+            return vals[0] if vals else ""
+        except Exception:
+            return ""
+
     def get_video_pix_fmt(self, filepath):
         """Kaynak videonun piksel formatini dondurur (bulunamazsa '')."""
         try:
@@ -3049,14 +3078,23 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # Kodlayicinin markasi cozucunun de markasini belirler. VP9 (CPU
         # kodlayici) icin marka onemsiz: makinede ne varsa onun cozucusu
         # kullanilir, hicbiri yoksa yazilim cozucusune dusulur.
+        def amd_cozucu():
+            """
+            AMD'de donanim cozucusu HER KAYNAKTA kazandirmiyor; kaynagin
+            kodegine bakip karar veriyoruz (bkz. D3D11VA_ISTEMEYEN_KODEKLER).
+            ffprobe yalnizca bu dal icin calisir, NVIDIA makinesinde degil.
+            """
+            kaynak = self.get_video_codec(cfg["input_file"])
+            return "" if kaynak in D3D11VA_ISTEMEYEN_KODEKLER else "d3d11va"
+
         if codec_v in AMF_CODECS:
-            cfg["hwaccel"] = "d3d11va"
+            cfg["hwaccel"] = amd_cozucu()
         elif codec_v.endswith("_nvenc"):
             cfg["hwaccel"] = "cuda"
         elif self.donanim.get(NVIDIA):
             cfg["hwaccel"] = "cuda"
         elif self.donanim.get(AMD):
-            cfg["hwaccel"] = "d3d11va"
+            cfg["hwaccel"] = amd_cozucu()
         else:
             cfg["hwaccel"] = ""
 

@@ -489,6 +489,19 @@ def test_hwaccel_markaya_gore_secilir():
     assert val_of(amd, "-hwaccel") == "d3d11va"
 
 
+def test_av1_kaynak_donanim_cozucu_istemeyenler_listesinde():
+    """
+    Olculdu (1080p, 3'er kosu, cikti bayt bayt ayni):
+      AV1  kaynak: d3d11va 2090 ms | yazilim 1431 ms  -> yazilim %46 hizli
+      H264 kaynak: d3d11va  950 ms | yazilim 1042 ms  -> donanim %10 hizli
+    AMD'de GPU filtre zinciri kurulamadigi icin kareler zaten RAM'e donuyor;
+    donanim cozucu fazladan bir kopya ekliyor ve kolay akislarda bu baskin.
+    """
+    assert "av1" in nv.D3D11VA_ISTEMEYEN_KODEKLER
+    assert "h264" not in nv.D3D11VA_ISTEMEYEN_KODEKLER
+    assert "hevc" not in nv.D3D11VA_ISTEMEYEN_KODEKLER
+
+
 def test_hwaccel_bos_ise_bayrak_hic_eklenmez():
     """Donanim yoksa yazilim cozucusu; bos bir -hwaccel degeri gecmemeli."""
     cmd, _ = nv.build_command(cfg(hwaccel=""), probes())
