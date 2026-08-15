@@ -231,8 +231,28 @@ CQ_RANGES = {
         "default": (31, 35)
     },
     # AV1 AMF'nin QP olcegi 0-255 (digerleri 0-51) - bkz. AMF_QP_TAVANI.
+    #
+    # 4K/1440p satirlari ONCE turetilmisti (156-172 / 150-166) ve GERCEK 4K
+    # icerikle CELISTI: QP144 bile VMAF 82.8 verdi. Turetme, ayni kaynagin
+    # KUCULTULMUS hallerinin eğiminden cikarilmisti; kucultunce detay
+    # yogunlastigi icin dusuk cozunurluk daha dusuk QP istiyordu ve o egim
+    # yukari dogru gecerli degil.
+    #
+    # 4K yerine gercek 4K olcumu kondu (h264.mp4, 2160x3840):
+    #   QP  20 -> VMAF 96.2 (57.2 MB)    QP  70 -> 92.9 (9.6 MB)
+    #   QP  50 -> 94.3      (16.0 MB)    QP 104 -> 90.0
+    # Ust sinir olculen VMAF 90 noktasi (104). Alt sinir AZALAN GETIRI dizi:
+    # QP 70'ten 20'ye inmek 6 kat bit harciyor ama yalnizca 3.3 VMAF puani
+    # getiriyor.
+    #
+    # DIKKAT - IKI OLCUM AYNI TEMELDE DEGIL: 480p/720p/1080p satirlari HAM
+    # kaynakla (test.y4m) olculdu, 4K satiri H.264 ile sikistirilmis bir
+    # kaynakla. Sikistirilmis referansa karsi VMAF egrisi yatiklasir ve 96'ya
+    # zor ulasir. Duzeltmek icin HAM (y4m/kayipsiz) bir 4K kaynak gerekir.
+    # 1440p icin hicbir olcum YOK; 4K satiri kullaniliyor - kaliteden yana
+    # hata yapmak icin (turetilmis yuksek QP degerleri kanitla celisti).
     "av1_amf": {
-        "4K": (156, 172), "1440p": (150, 166), "1080p": (144, 160),
+        "4K": (70, 104), "1440p": (70, 104), "1080p": (144, 160),
         "720p": (135, 153), "480p": (125, 146), "360p": (120, 141),
         "240p": (115, 136),
         "default": (144, 160)
