@@ -239,27 +239,17 @@ CQ_RANGES = {
     },
 }
 
-# Varsayilanlar ilgili araligin ortasidir (tablodaki mevcut degerlerin kurali).
-# av1 icin "1080p" anahtari eksikti; "default" (45) devreye girip araligin
-# (38-45) tam TEPESINE dusuyordu, digerlerinin aksine.
-CQ_DEFAULTS = {
-    # "default" (= "Orijinal" secimi) bilerek 45'te birakildi: kaynak cozunurlugu
-    # bilinmedigi icin mevcut davranisi degistirmemek adina dokunulmadi.
-    "av1_nvenc": {"4K": 47, "1440p": 44, "1080p": 41, "720p": 35, "480p": 30,
-                  "360p": 27, "240p": 25, "default": 45},
-    "hevc_nvenc": {"4K": 35, "1440p": 33, "1080p": 31, "720p": 26, "480p": 22,
-                   "360p": 20, "240p": 18, "default": 31},
-    "h264_nvenc": {"4K": 29, "1440p": 27, "1080p": 26, "720p": 21, "480p": 18,
-                   "360p": 15, "240p": 13, "default": 26},
-    "libvpx-vp9": {"4K": 15, "1440p": 24, "1080p": 31, "720p": 32, "480p": 33, "360p": 36, "240p": 37, "default": 31},
-    # AMD: araligin ortasi (NVENC tablosunun kurali)
-    "hevc_amf": {"4K": 35, "1440p": 34, "1080p": 33, "720p": 32, "480p": 32,
-                 "360p": 31, "240p": 30, "default": 33},
-    "h264_amf": {"4K": 35, "1440p": 34, "1080p": 33, "720p": 32, "480p": 31,
-                 "360p": 30, "240p": 29, "default": 33},
-    "av1_amf": {"4K": 164, "1440p": 158, "1080p": 152, "720p": 144, "480p": 136,
-                "360p": 131, "240p": 126, "default": 152},
-}
+# Varsayilan artik AYRI BIR TABLODA TUTULMUYOR: onerilen araligin ALT SINIRI
+# (= en yuksek kalite ucu) dogrudan CQ_RANGES'ten okunur (bkz. get_cq_default).
+#
+# Neden alt sinir: sekme acildiginda kullanici onerilen bandin EN IYI kalite
+# noktasinda baslasin, oradan istedigi kadar assagi indirsin. Ortadan baslamak
+# arsiv icin dusuk kaliyordu - gercek 4K bir kaynakta ortadaki deger VMAF 80.7
+# uretti, hedef band 90-96 iken.
+#
+# Neden ayri tablo yok: iki tablonun ayrisması bu projede zaten bir kez kusur
+# uretti (av1_nvenc'te "1080p" anahtari eksikti, "default" devreye girip
+# araligin tepesine dusuyordu). Tek kaynaktan turetince o sinif hata imkansiz.
 
 SCALE_MAP = {
     "240p": 426, "360p": 640, "480p": 854, "720p": 1280,
@@ -457,8 +447,11 @@ def get_cq_range(codec, scale):
 
 
 def get_cq_default(codec, scale):
-    codec_defaults = CQ_DEFAULTS.get(codec, CQ_DEFAULTS["hevc_nvenc"])
-    return codec_defaults.get(scale, codec_defaults["default"])
+    """
+    Sekme acildiginda kullanilacak CQ/QP: onerilen araligin ALT SINIRI, yani
+    bandin EN YUKSEK KALITE ucu. Kullanici oradan istedigi kadar asagi iner.
+    """
+    return get_cq_range(codec, scale)[0]
 
 
 def parse_time(metin):
