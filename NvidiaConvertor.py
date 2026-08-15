@@ -341,6 +341,10 @@ DONANIM = {
     },
 }
 
+# Acilista secili gelmesi istenen sekme. Yoksa (donanimi olmadigi icin
+# silindiyse) kalan ilk sekmeye dusulur - bkz. donanimi_uygula.
+VARSAYILAN_SEKME = "⚡ SAF CUDA"
+
 # Markadan bagimsiz sekmeler: donanim olmasa da calisirlar, HIC gizlenmezler.
 # (VP9 tamamen CPU'da kodlar; sadece-altyazi hic kodlama yapmaz.)
 DONANIMSIZ_SEKMELER = ("VP9 (Google VOD)", "💬 SADECE ALTYAZI")
@@ -1541,7 +1545,14 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.create_cuda_tab("⚡ SAF CUDA")
         self.create_remux_tab("💬 SADECE ALTYAZI")
 
-        self.tabview.set("⚡ SAF CUDA")
+        # Acilis sekmesi BURADA SECILMEZ; donanim taramasindan SONRA secilir
+        # (bkz. donanimi_uygula). Sebep olculdu: CTkTabview.set() 100 ms
+        # sonrasina "secili olmayan sekmeleri gizle" isi planliyor. Burada
+        # "SAF CUDA" secilip hemen ardindan o sekme "donanimi yok" diye
+        # silinince, gecikmeli is ARTIK OLMAYAN bir adi koruyor ve yerine
+        # gecen sekmenin cercevesini de gizliyordu. Sonuc: acilista sekme
+        # seridi doluyken icerik alani BOS geliyor ve ancak kullanici bir
+        # sekmeye tiklayinca duzeliyordu.
 
         # 4. BAŞLAT BUTONU
         self.btn_start = ctk.CTkButton(
@@ -2929,10 +2940,15 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         if not bulunan:
             self.log("   ⚠️ Yalnızca CPU (VP9) ve altyazı modu kullanılabilir.")
 
-        # Acik sekme silinmis olabilir; kalan gecerli bir sekmeye gec.
+        # Acilis sekmesi burada seciliyor: silme islemleri BITTIKTEN sonra.
+        # Boylece CTkTabview'in set() ile planladigi gecikmeli "digerlerini
+        # gizle" isi her zaman GECERLI bir sekme adini korur. Kurulum
+        # sirasinda secmek, o sekme sonradan silinince icerik alanini bos
+        # birakiyordu (bkz. setup'taki not).
         kalan = [ad for ad in self.tabs]
-        if kalan and self.tabview.get() not in self.tabs:
-            self.tabview.set(kalan[0])
+        if kalan:
+            hedef = VARSAYILAN_SEKME if VARSAYILAN_SEKME in self.tabs else kalan[0]
+            self.tabview.set(hedef)
         self.on_tab_change()
 
     def _refresh_all_cq_displays(self):
