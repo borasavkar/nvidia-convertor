@@ -3299,19 +3299,29 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # AMD kodlayicilari cok kucuk kareyi reddediyor. Cikacak kare boyutunu
         # burada (ana thread'de) belirleyip cfg'ye koyuyoruz ki dogrulama
         # ffprobe'u tekrar calistirmak zorunda kalmasin.
+        #
+        # Bu bir YAKLASIK degerdir, birebir tahmin degil: AMF kodlayicisi
+        # genisligi kendi hizasina yuvarliyor (olculdu: 854 -> 856). Amac
+        # minimum kare denetimi oldugu icin birkac pikselluk sapma onemsiz;
+        # kullaniciya gosterilen olcu de bu yuzden "yaklasik" okunmali.
         if codec_v in AMF_CODECS:
             if cfg["scale"] != "Orijinal" and SCALE_MAP.get(cfg["scale"]):
                 # Olcekleme uzun kenari sabitler; kisa kenar en-boy oranindan
                 # gelir. Kaynak orani bilinmiyorsa 16:9 varsayilir.
                 uzun = SCALE_MAP[cfg["scale"]]
                 w, h = self.get_video_resolution(cfg["input_file"])
+                # Kisa kenar CIFT olmali: olcekleme filtresi "-2" kullaniyor,
+                # yani ffmpeg'in urettigi boyut da cifte yuvarlanir. Tek sayi
+                # hesaplamak kullaniciya gosterilen olcuyu yanlis yapardi.
+                def cift(x):
+                    return max(2, round(x / 2) * 2)
                 if w and h:
                     if w >= h:
-                        cfg["cikti_boyutu"] = (uzun, max(2, round(uzun * h / w)))
+                        cfg["cikti_boyutu"] = (uzun, cift(uzun * h / w))
                     else:
-                        cfg["cikti_boyutu"] = (max(2, round(uzun * w / h)), uzun)
+                        cfg["cikti_boyutu"] = (cift(uzun * w / h), uzun)
                 else:
-                    cfg["cikti_boyutu"] = (uzun, round(uzun * 9 / 16))
+                    cfg["cikti_boyutu"] = (uzun, cift(uzun * 9 / 16))
             else:
                 cfg["cikti_boyutu"] = self.get_video_resolution(cfg["input_file"])
 
@@ -3332,11 +3342,24 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         if cfg["codec_v"] in AMF_CODECS and cfg.get("cikti_boyutu"):
             w, h = cfg["cikti_boyutu"]
             if w and h and (w < AMF_MIN_GENISLIK or h < AMF_MIN_YUKSEKLIK):
+                # Tavsiye DURUMA GORE degisir. "Daha yuksek cozunurluk secin"
+                # demek tek basina cikmaz sokak: buyutme korumasi acikken
+                # secilen cozunurluk sessizce "Orijinal"e geri donuyor ve
+                # kullanici ayni hatayi tekrar aliyor.
+                if cfg.get("upscale_blocked"):
+                    oneri = ("Daha yüksek bir çözünürlük seçtiniz ama "
+                             "'Kaynaktan büyütme yapma' şalteri açık olduğu için "
+                             "uygulanmadı.\n\nO şalteri kapatın ya da bu dosyayı "
+                             "VP9 (CPU) sekmesiyle dönüştürün.")
+                else:
+                    oneri = ("Daha yüksek bir çözünürlük seçin — bunun için "
+                             "'Kaynaktan büyütme yapma' şalterini de kapatmanız "
+                             "gerekir.\n\nYa da bu dosyayı VP9 (CPU) sekmesiyle "
+                             "dönüştürün; orada böyle bir sınır yok.")
                 return ("Görüntü AMD Kodlayıcı İçin Çok Küçük",
                         f"Çıkacak kare {w}x{h}. AMD donanım kodlayıcısı en az "
                         f"{AMF_MIN_GENISLIK}x{AMF_MIN_YUKSEKLIK} ister ve bunun "
-                        "altında hata verip durur.\n\nDaha yüksek bir çözünürlük "
-                        "seçin ya da bu dosyayı VP9 (CPU) sekmesiyle dönüştürün.")
+                        f"altında hata verip durur.\n\n{oneri}")
 
         if cfg["is_remux"]:
             if not cfg["sub_file"]:
