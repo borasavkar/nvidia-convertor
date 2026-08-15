@@ -443,6 +443,42 @@ def test_amf_kabul_eden_sekmeler_olculen_sinirlara_uyuyor():
     assert nv.amf_kabul_eden_sekmeler(64, 32) == []
 
 
+def test_ses_varsayilani_KOPYALA():
+    """
+    Olculdu (1.mp4, 83 dk): 32 kbps AAC kaynak 128 kbps Opus'a kodlanınca ses
+    19 MB -> 72 MB oldu ve cikti kaynaktan BUYUK cikti; video tarafi ise
+    77.5 -> 70.2 MB ile kuculmustu. Varsayilan yeniden kodlama olmamali.
+    """
+    assert nv.FFmpegStudioPro.AUDIO_VALUES[0] == nv.SES_KOPYALA
+    assert nv.SES_KOPYALA.startswith("Kopyala")   # collect_config bunu boyle anliyor
+
+
+def test_ses_bitrate_kaynagi_asmiyor():
+    """Hedef, kaynagin USTUNDEKI ilk adimi asamaz; bir kademe pay kalir."""
+    # Kullanicinin gercek dosyasi: 32 kbps kaynak, 128k secili -> 64k
+    deger, not_ = nv.ses_bitrate_sinirla("128k", 32)
+    assert deger == "64k" and "32 kbps" in not_
+    # Kaynak zaten yuksekse secime dokunulmaz
+    assert nv.ses_bitrate_sinirla("128k", 128) == ("128k", None)
+    assert nv.ses_bitrate_sinirla("128k", 190) == ("128k", None)
+    # Kullanici zaten dusuk sectiyse YUKSELTILMEZ
+    assert nv.ses_bitrate_sinirla("64k", 320) == ("64k", None)
+    # Kaynak okunamadi (MKV'lerde yaygin): dokunma
+    assert nv.ses_bitrate_sinirla("128k", None) == ("128k", None)
+    # "Kopyala" gibi sayiya cevrilemeyen deger: dokunma
+    assert nv.ses_bitrate_sinirla(nv.SES_KOPYALA, 32) == (nv.SES_KOPYALA, None)
+
+
+def test_komutta_ses_bitrate_sinirlaniyor():
+    cmd, notes = nv.build_command(amd_cfg(a_bitrate="128k", copy_audio=False),
+                                  probes(audio_bitrate=32))
+    assert cmd[cmd.index("-b:a") + 1] == "64k"
+    assert any("kaybolmuş kaliteyi" in n.lower() or "kaybolmuş" in n for n in notes)
+    # Kaynak bilinmiyorsa secim aynen gecer
+    cmd, _ = nv.build_command(amd_cfg(a_bitrate="128k", copy_audio=False), probes())
+    assert cmd[cmd.index("-b:a") + 1] == "128k"
+
+
 def test_hata_logu_dosyaya_yazilir(tmp_path):
     """
     Hata dokumu YALNIZCA is coktugunde calisir, yani normal kullanimda hic

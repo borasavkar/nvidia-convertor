@@ -341,6 +341,18 @@ DONANIM = {
     },
 }
 
+# --- SES ---
+# Varsayilan SES AYARI "kopyala". Olculdu (kullanicinin 83 dakikalik 1.mp4
+# dosyasi): kaynagin sesi 32 kbps AAC (19 MB) iken uygulama onu 128 kbps
+# Opus'a yeniden kodluyordu (72 MB) ve TEK BASINA bu, ciktinin kaynaktan
+# buyuk cikmasina yol aciyordu - video tarafi 77.5 -> 70.2 MB ile kuculmustu.
+# Kopyalama hem kayipsiz hem kucuk; mumkun olmadigi durumu uygulama zaten
+# OLCUYOR (bkz. can_copy_audio) ve kendiliginden yeniden kodlamaya duser.
+SES_KOPYALA = "Kopyala (yeniden kodlama yok)"
+
+# Arayuzde sunulan bitrate adimlari (kbps). Sinirlama bu merdiveni kullanir.
+SES_BITRATE_ADIMLARI = (64, 96, 128, 192, 256, 320)
+
 # Acilista secili gelmesi istenen sekme. Yoksa (donanimi olmadigi icin
 # silindiyse) kalan ilk sekmeye dusulur - bkz. donanimi_uygula.
 VARSAYILAN_SEKME = "⚡ SAF CUDA"
@@ -539,6 +551,35 @@ SUB_DIL_SECENEKLERI = {
     "Japonca (jpn)": "jpn",
     "Korece (kor)": "kor",
 }
+
+
+def ses_bitrate_sinirla(secilen, kaynak_kbps):
+    """
+    Yeniden kodlamada kullanilacak ses bitrate'ini dondurur: (deger, not).
+    SAF FONKSIYON.
+
+    Kayipli sesin kaybettigi kaliteyi geri getirmek MUMKUN DEGIL: 32 kbps'lik
+    bir kaynagi 128 kbps'e kodlamak yalnizca dosyayi buyutur. Kural: hedef,
+    kaynagin USTUNDEKI ilk adimi asamaz. Boylece kayipli -> kayipli gecis
+    icin bir kademe pay kalir (32 -> 64k), israf ise engellenir.
+
+    Kaynagin bitrate'i okunamadiysa (None; bazi MKV'lerde akis basina deger
+    yazmaz) DOKUNULMAZ - tahmin edip kaliteyi dusurmektense secimi birakiriz.
+    """
+    if not kaynak_kbps or not secilen:
+        return secilen, None
+    try:
+        secilen_kbps = int(str(secilen).rstrip("kK"))
+    except ValueError:
+        return secilen, None
+    tavan = next((adim for adim in SES_BITRATE_ADIMLARI if adim >= kaynak_kbps),
+                 SES_BITRATE_ADIMLARI[-1])
+    if secilen_kbps <= tavan:
+        return secilen, None
+    return (f"{tavan}k",
+            f"🎵 Kaynağın sesi {kaynak_kbps} kbps; {secilen} yerine {tavan}k "
+            "kullanılıyor. Daha yükseği kaybolmuş kaliteyi geri getirmez, "
+            "sadece dosyayı büyütür.")
 
 
 def cozunurluk_bandi(w, h):
@@ -997,12 +1038,21 @@ def build_command(cfg, probes):
             notes.append("🎵 Ses yeniden kodlanmadan kopyalanıyor (kalite kaybı yok).")
         else:
             # WebM yalnizca opus/vorbis kabul eder; boyle durumlarda isi
-            # patlatmak yerine yuksek bitrate ile kodluyoruz.
-            cmd.extend(["-c:a", codec_a, "-b:a", "192k"])
+            # patlatmak yerine yuksek bitrate ile kodluyoruz. "Yuksek" olmasi
+            # kaynagi ASMAK anlamina gelmez: 32 kbps'lik bir sesi 192k'ya
+            # kodlamak yalnizca dosyayi buyutur (bkz. ses_bitrate_sinirla).
+            yedek_bitrate, _ = ses_bitrate_sinirla("192k", probes.get("audio_bitrate"))
+            cmd.extend(["-c:a", codec_a, "-b:a", yedek_bitrate])
             notes.append(f"⚠️ Kaynak ses '{container}' konteynerine kopyalanamıyor; "
-                         f"{codec_a} 192k ile yeniden kodlanacak.")
+                         f"{codec_a} {yedek_bitrate} ile yeniden kodlanacak.")
     else:
-        cmd.extend(["-c:a", codec_a, "-b:a", cfg["a_bitrate"]])
+        # Kaynaktan yuksek bitrate secmek kaliteyi ARTIRMAZ, yalnizca dosyayi
+        # buyutur (bkz. ses_bitrate_sinirla).
+        a_bitrate, ses_notu = ses_bitrate_sinirla(cfg["a_bitrate"],
+                                                  probes.get("audio_bitrate"))
+        cmd.extend(["-c:a", codec_a, "-b:a", a_bitrate])
+        if ses_notu:
+            notes.append(ses_notu)
 
     for anahtar, deger in (("title", cfg["meta_title"]), ("artist", cfg["meta_artist"]),
                            ("album", cfg["meta_album"]), ("grouping", cfg["meta_grouping"])):
@@ -1779,10 +1829,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     # ORTAK KART URETICILERI
     # (create_tab ile create_cuda_tab arasindaki kopya kod buraya toplandi)
     # =======================================================
-    AUDIO_VALUES = ["Kopyala (yeniden kodlama yok)", "64k", "96k", "128k", "192k", "256k", "320k"]
+    AUDIO_VALUES = [SES_KOPYALA] + [f"{k}k" for k in SES_BITRATE_ADIMLARI]
     PRESET_VALUES = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"]
     SCALE_VALUES = ["Orijinal", "240p", "360p", "480p", "720p", "1080p", "1440p", "4K"]
-    VP9_AUDIO_VALUES = ["Kopyala (yeniden kodlama yok)", "64k", "96k", "128k", "192k"]
+    VP9_AUDIO_VALUES = [SES_KOPYALA, "64k", "96k", "128k", "192k"]
 
     # Kayitli ayarlar yuklenirken dogrulama icin: combobox'lar salt-okunur
     # oldugundan gecersiz bir deger kutuda takili kalir ve ffmpeg'e gider.
@@ -1920,7 +1970,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         """Her iki NVENC sekmesinin paylastigi degisken seti."""
         return {
             "container": ctk.StringVar(value=container_default),
-            "audio_bitrate": ctk.StringVar(value="128k"),
+            "audio_bitrate": ctk.StringVar(value=SES_KOPYALA),
             "preset": ctk.StringVar(value="p7"),
             "cq": ctk.IntVar(value=cq_default),
             # Tk degiskeni DEGIL, duz sayi: en son OTOMATIK konan CQ. Dosya
@@ -2047,7 +2097,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         tab_vars = {
             "codec": "libvpx-vp9",
             "container": ctk.StringVar(value="webm"),
-            "audio_bitrate": ctk.StringVar(value="128k"),
+            "audio_bitrate": ctk.StringVar(value=SES_KOPYALA),
             "cq": ctk.IntVar(value=31),
             "cq_auto": 31,          # bkz. _nvenc_tab_vars: elle secim korumasi
             "scale": ctk.StringVar(value="Orijinal"),
@@ -2086,7 +2136,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         card_format.pack(fill="x", pady=(0, 10))
         ReadOnlyComboBox(card_format, variable=tab_vars["container"], values=["webm", "mkv"]).pack(fill="x", padx=15, pady=(0, 5))
         ctk.CTkLabel(card_format, text="* VP9 için WebM standarttır (Audio: Opus)", font=("Arial", 10, "italic"), text_color="gray").pack(anchor="w", padx=15, pady=(0, 5))
-        ReadOnlyComboBox(card_format, variable=tab_vars["audio_bitrate"], values=["Kopyala (yeniden kodlama yok)", "64k", "96k", "128k", "192k"]).pack(fill="x", padx=15, pady=(5, 15))
+        ReadOnlyComboBox(card_format, variable=tab_vars["audio_bitrate"], values=self.VP9_AUDIO_VALUES).pack(fill="x", padx=15, pady=(5, 15))
 
         card_vp9 = self.create_card(col_left, "🧠 VP9 İşlemci Motoru (CPU)")
         card_vp9.pack(fill="x", pady=10)
@@ -3074,6 +3124,26 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         except Exception:
             return (0, 0)
 
+    def get_audio_bitrate(self, filepath):
+        """
+        Kaynagin ilk ses akisinin bitrate'i (kbps); okunamazsa None.
+
+        None YAYGIN ve normaldir: MKV gibi konteynerlerde akis basina bitrate
+        yazmayabilir. O durumda sinirlama yapilmaz (bkz. ses_bitrate_sinirla).
+        """
+        try:
+            sonuc = subprocess.run(
+                [FFPROBE_BIN, "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=bit_rate",
+                 "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            ham = (sonuc.stdout or "").strip().splitlines()
+            return round(int(ham[0]) / 1000) if ham and ham[0].isdigit() else None
+        except Exception:
+            return None
+
     def can_copy_audio(self, filepath, container):
         """
         Kaynak sesin hedef konteynere KOPYALANABILDIGINI dener (0.5 sn deneme muxu).
@@ -3203,6 +3273,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     def _settings_snapshot(self):
         """Kaydedilecek ayarlari toplar (ana thread)."""
         data = {
+            # Eski ayar dosyalarindaki 128k ses varsayilani bir KEZ "Kopyala"ya
+            # cevrilir; bu bayrak islemin tekrarlanmasini engeller (kullanici
+            # bilerek 128k'ya donmusse ikinci kez ezmeyelim).
+            "ses_varsayilani_kopyala_gocu": True,
             "aktif_sekme": self.tabview.get(),
             "son_video_klasoru": self.last_video_dir,
             "son_altyazi_klasoru": self.last_sub_dir,
@@ -3285,6 +3359,26 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 except Exception:
                     pass
 
+        # --- ESKI SES VARSAYILANI GOCU (bir kez) ---
+        # Ses varsayilani "128k yeniden kodla" idi ve kaydedilmis ayarlar bunu
+        # yeni varsayilanin (Kopyala) uzerine yaziyordu. O deger kullanicinin
+        # BILEREK sectigi bir sey degil, eski varsayilanin kalintisi: OLCULDU,
+        # 32 kbps'lik bir kaynakta sesi 19 MB'tan 72 MB'a cikariyor ve ciktiyi
+        # kaynaktan buyuk yapiyordu. Yalnizca tam olarak eski varsayilan
+        # duruyorsa degistirilir; baska bir deger secilmisse dokunulmaz.
+        if not data.get("ses_varsayilani_kopyala_gocu"):
+            gocen = []
+            for ad, tab_vars in self.tabs.items():
+                var = tab_vars.get("audio_bitrate")
+                if var is not None and var.get() == "128k":
+                    var.set(SES_KOPYALA)
+                    gocen.append(ad)
+            if gocen:
+                self.log(f"ℹ️ Ses ayarı {len(gocen)} sekmede 'Kopyala' yapıldı "
+                         "(eski varsayılan 128k idi; kaynaktan yüksek bitrate "
+                         "kaliteyi artırmaz, dosyayı büyütür). İstediğiniz "
+                         "sekmede geri değiştirebilirsiniz.")
+
         aktif = data.get("aktif_sekme")
         if aktif in self.tabs:
             try:
@@ -3334,7 +3428,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "input_file": input_file if input_file is not None else self.video_path.get(),
             "sub_file": sub_file if sub_file is not None else self.sub_path.get(),
             "container": tab_vars["container"].get(),
-            "a_bitrate": oku("audio_bitrate", "128k"),
+            "a_bitrate": oku("audio_bitrate", SES_KOPYALA),
             # Sadece-altyazi modunda CQ diye bir sey yok; "-" dosya adinda ve
             # kuyruk listesinde okunabilir bir yer tutucu olarak kalir.
             "cq_val": str(oku("cq", "-")),
@@ -3820,6 +3914,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 "sub_needs_transcode": sub_cevrim,
                 "audio_copy_ok": (self.can_copy_audio(input_file, container)
                                   if cfg["copy_audio"] and not is_remux else False),
+                # "Kopyala" secili olsa da olculur: kopyalama basarisiz olursa
+                # devreye giren yedek bitrate de kaynagi asmamali.
+                "audio_bitrate": (None if is_remux
+                                  else self.get_audio_bitrate(input_file)),
             }
 
             cmd, notes = build_command(cfg, probes)
