@@ -3636,6 +3636,85 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             self.job_queue.pop(0)
             self._refresh_queue_view()
 
+    def _kaynak_akis_dokumu(self, kaynak):
+        """
+        Kaynagin akis yapisini kisa bicimde dondurur (hata dokumu icin).
+        Okunamazsa aciklayici bir satir dondurur; hata yolunu ASLA patlatmaz.
+        """
+        try:
+            sonuc = subprocess.run(
+                [FFPROBE_BIN, "-v", "error", "-show_entries",
+                 "stream=index,codec_type,codec_name,profile,width,height,pix_fmt,"
+                 "r_frame_rate,sample_rate,channels,channel_layout:"
+                 "format=format_name,duration,bit_rate",
+                 "-of", "default=noprint_wrappers=1", kaynak],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30,
+                encoding="utf-8", errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            return (sonuc.stdout or "").strip() or (sonuc.stderr or "").strip() or "(bos)"
+        except Exception as e:
+            return f"(okunamadi: {e})"
+
+    def _hata_logu_yaz(self, cfg, cmd, cikis_kodu, bozuk_ad=None):
+        """
+        Basarisiz isin dokumunu ciktinin yanina ".hata.log" olarak yazar ve
+        yolu dondurur (hicbir yere yazilamazsa None).
+
+        Neden dosya: hata penceresi "log ekranina bakin" diyor ama o kutu 3
+        satir gosteriyor ve salt-okunur oldugu icin metni kopyalamak zor.
+        Hatayi cozmek icin gereken her sey (komut, cikis kodu, ffmpeg'in son
+        satirlari, is ayarlari, kaynagin akis yapisi) tek dosyada olmazsa
+        kullanicidan parca parca ekran goruntusu istemek gerekiyor.
+
+        Yazma HATA YOLUNDA calisiyor: burada cikan bir istisna asil hatayi
+        gizlerdi, o yuzden her sey try icinde ve basarisizlik sessiz.
+        """
+        satirlar = [
+            "=" * 70,
+            f"NvidiaConvertor hata dokumu - {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            "=" * 70,
+            f"Cikis kodu   : {cikis_kodu}",
+            f"Sekme        : {cfg.get('tab_name')}",
+            f"Kodlayici    : {cfg.get('codec_v')}    CQ/QP: {cfg.get('cq_val')}",
+            f"Olcek        : {cfg.get('scale')}    Cikacak kare: {cfg.get('cikti_boyutu')}",
+            f"Cozucu       : hwaccel={cfg.get('hwaccel') or '-'}  tam_gpu={bool(cfg.get('tam_gpu'))}",
+            f"Konteyner    : {cfg.get('container')}    10-bit: {cfg.get('ten_bit')}",
+            f"Ses          : {cfg.get('codec_a')}  bitrate={cfg.get('a_bitrate')}  kopyala={cfg.get('copy_audio')}",
+            f"Altyazi      : {cfg.get('sub_file') or '-'}",
+            f"Kaynak       : {cfg.get('input_file')}",
+            f"Cikti        : {cfg.get('output_file')}",
+            f"Yarim dosya  : {bozuk_ad or '-'}",
+            f"ffmpeg       : {FFMPEG_BIN}",
+            "",
+            "--- CALISTIRILAN KOMUT " + "-" * 47,
+            komut_metni(cmd),
+            "",
+            "--- KAYNAGIN AKIS YAPISI (ffprobe) " + "-" * 35,
+            self._kaynak_akis_dokumu(cfg.get("input_file") or ""),
+            "",
+            "--- FFMPEG'IN SON CIKTISI " + "-" * 44,
+        ]
+        satirlar.extend(self._ffmpeg_tail)
+        metin = "\n".join(satirlar) + "\n"
+
+        # Once ciktinin yanina; orasi yazilamazsa (salt-okunur klasor, USB
+        # cikarilmis vb.) hatayi kaybetmemek icin TEMP'e dus.
+        temel = cfg.get("output_file") or ""
+        adaylar = []
+        if temel:
+            adaylar.append(temel + ".hata.log")
+        adaylar.append(os.path.join(tempfile.gettempdir(),
+                                    "NvidiaConvertor_hata.log"))
+        for yol in adaylar:
+            try:
+                with open(yol, "w", encoding="utf-8") as f:
+                    f.write(metin)
+                return yol
+            except Exception:
+                continue
+        return None
+
     def _mark_broken_output(self, output_file):
         """
         Basarisiz bir isin geride biraktigi yarim/bos dosyayi ".bozuk" ekiyle
@@ -3843,9 +3922,22 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 self._thread_safe_log("=" * 60)
 
                 bozuk_ad = self._mark_broken_output(output_file)
+
+                # Log kutusu 3 satir gosteriyor ve kopyalanamiyor; hatayi
+                # cozebilmek icin gereken her sey dosyaya da yazilir.
+                log_yolu = self._hata_logu_yaz(cfg, cmd,
+                                               self.current_process.returncode,
+                                               bozuk_ad)
+                if log_yolu:
+                    self._thread_safe_log(f"📄 Hata dökümü yazıldı: {log_yolu}")
+
                 ek_mesaj = ""
                 if bozuk_ad:
                     ek_mesaj = f"\n\nYarım kalan çıktı şu adla işaretlendi:\n{os.path.basename(bozuk_ad)}"
+                if log_yolu:
+                    ek_mesaj += ("\n\nHatanın tam dökümü şu dosyaya yazıldı "
+                                 "(komut, ffmpeg çıktısı ve kaynağın akış "
+                                 f"yapısı dahil):\n{log_yolu}")
                 self.after(0, messagebox.showerror, "Hata",
                            "FFmpeg bir hata döndürdü. Detaylar için siyah log ekranına bakın." + ek_mesaj)
 

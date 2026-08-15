@@ -443,6 +443,39 @@ def test_amf_kabul_eden_sekmeler_olculen_sinirlara_uyuyor():
     assert nv.amf_kabul_eden_sekmeler(64, 32) == []
 
 
+def test_hata_logu_dosyaya_yazilir(tmp_path):
+    """
+    Hata dokumu YALNIZCA is coktugunde calisir, yani normal kullanimda hic
+    denenmez ve sessizce bozulabilir. En kritik iki parca komut ile ffmpeg'in
+    son ciktisi: ikisi de yoksa dosyanin varligi bir ise yaramaz.
+    """
+    app = nv.FFmpegStudioPro.__new__(nv.FFmpegStudioPro)   # arayuz kurulmaz
+    app._ffmpeg_tail = ["[hevc_amf] encoder->Init() failed with error 5",
+                        "Conversion failed!"]
+    cikti = tmp_path / "deneme.mkv"
+    c = amd_cfg(input_file=str(tmp_path / "kaynak.mkv"), output_file=str(cikti))
+    yol = app._hata_logu_yaz(c, ["ffmpeg", "-i", "kaynak.mkv", "cikti.mkv"], 1,
+                             str(cikti) + ".bozuk")
+
+    assert yol == str(cikti) + ".hata.log"
+    metin = open(yol, encoding="utf-8").read()
+    assert "Cikis kodu   : 1" in metin
+    assert "hevc_amf" in metin                     # is ayarlari
+    assert "-i kaynak.mkv" in metin                # calistirilan komut
+    assert "Init() failed with error 5" in metin   # ffmpeg'in son ciktisi
+    assert "Conversion failed!" in metin
+
+
+def test_hata_logu_yazilamayan_klasorde_TEMP_e_duser(tmp_path):
+    """Cikti klasoru yazilamazsa hatayi kaybetmektense TEMP'e yazilmali."""
+    app = nv.FFmpegStudioPro.__new__(nv.FFmpegStudioPro)
+    app._ffmpeg_tail = ["bir hata"]
+    olmayan = tmp_path / "yok" / "olmayan_klasor" / "cikti.mkv"
+    yol = app._hata_logu_yaz(amd_cfg(output_file=str(olmayan)), ["ffmpeg"], 1)
+    assert yol and os.path.isdir(os.path.dirname(yol))
+    assert "bir hata" in open(yol, encoding="utf-8").read()
+
+
 def _sorun(**kw):
     """_job_sorunu'yu arayuz olmadan cagirir (fonksiyon self kullanmiyor)."""
     c = amd_cfg(input_file=os.path.abspath(__file__), output_dir="",
