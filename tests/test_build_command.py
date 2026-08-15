@@ -379,12 +379,10 @@ def test_av1_amf_qp_olcegi_255():
 
 @pytest.mark.parametrize("codec", ["hevc_amf", "h264_amf", "av1_amf"])
 @pytest.mark.parametrize("scale", ["240p", "360p", "480p", "720p", "1080p", "1440p", "4K"])
-def test_amd_varsayilan_qp_araligin_ortasinda(codec, scale):
-    """NVENC tablosuyla ayni kural: varsayilan onerilen araligin ortasi."""
+def test_amd_varsayilan_qp_araligin_ALT_SINIRI(codec, scale):
+    """Sekme, onerilen bandin en yuksek kalite ucunda acilir."""
     lo, hi = nv.get_cq_range(codec, scale)
-    varsayilan = nv.get_cq_default(codec, scale)
-    assert lo <= varsayilan <= hi
-    assert abs(varsayilan - (lo + hi) / 2) <= 0.5
+    assert nv.get_cq_default(codec, scale) == lo
 
 
 @pytest.mark.parametrize("codec", ["hevc_amf", "h264_amf", "av1_amf"])
@@ -617,11 +615,24 @@ def test_temporal_aq_kapatilabilir():
 # ---------------------------------------------------------------- CQ tablolari
 @pytest.mark.parametrize("codec", ["av1_nvenc", "hevc_nvenc", "h264_nvenc", "libvpx-vp9"])
 @pytest.mark.parametrize("scale", ["240p", "360p", "480p", "720p", "1080p", "1440p", "4K"])
-def test_varsayilan_cq_onerilen_araligin_ortasinda(codec, scale):
+def test_varsayilan_cq_onerilen_araligin_ALT_SINIRI(codec, scale):
+    """
+    Sekme acildiginda kullanici onerilen bandin EN IYI kalite noktasinda
+    baslar. Ortadan baslamak arsiv icin dusuk kaliyordu: gercek 4K bir
+    kaynakta ortadaki deger VMAF 80.7 uretti (hedef band 90-96).
+    """
     lo, hi = nv.get_cq_range(codec, scale)
-    varsayilan = nv.get_cq_default(codec, scale)
-    assert lo <= varsayilan <= hi
-    assert abs(varsayilan - (lo + hi) / 2) <= 0.5
+    assert nv.get_cq_default(codec, scale) == lo
+    assert lo < hi                       # aralik gercekten bir aralik olsun
+
+
+def test_varsayilan_ayri_tabloda_TUTULMAZ():
+    """
+    Iki tablonun ayrismasi bu projede bir kez kusur uretmisti (av1_nvenc'te
+    "1080p" anahtari eksikti, "default" devreye girip araligin tepesine
+    dusuyordu). Varsayilan artik CQ_RANGES'ten turetiliyor.
+    """
+    assert not hasattr(nv, "CQ_DEFAULTS")
 
 
 def test_bilinmeyen_codec_hevc_tablosuna_duser():
