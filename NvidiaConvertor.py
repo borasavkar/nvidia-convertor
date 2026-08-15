@@ -380,6 +380,14 @@ AMF_MIN_YUKSEKLIK = 128
 # AV1'de donanim one gecebilir - listeyi genisletmeden once OLC.
 D3D11VA_ISTEMEYEN_KODEKLER = frozenset({"av1"})
 
+# Kullanicinin donanim cozucu tercihi. "Otomatik" yukaridaki olcume uyar;
+# digerleri kullanicinin bilinçli secimidir (dusuk CPU mu, kisa sure mi).
+COZUCU_SECENEKLERI = {
+    "Otomatik (ölçüme göre)": "oto",
+    "Donanım - GPU (d3d11va)": "donanim",
+    "Yazılım - CPU (dav1d vb.)": "yazilim",
+}
+
 
 def amf_qp_tavani(codec):
     """Bu kodlayicinin QP kaydiricisinin ust siniri."""
@@ -598,6 +606,25 @@ def build_filters(cfg, probes):
 
     if not cfg["is_pure_cuda"] and cfg["sub_file"]:
         vf_filters.append(f"subtitles={escape_filter_path(cfg['sub_file'])}")
+
+    # ---------- RENK ETIKETI ----------
+    # Kaynakta renk metadata'si yoksa cikti YANLIS etiketleniyor ve goruntu
+    # bozuk gorunuyor. OLCULDU: etiketsiz 8-bit bir kaynak 10-bit'e cevrilince
+    # cikti "color_primaries=bt2020, color_transfer=smpte2084" yani HDR/PQ
+    # damgasi aliyor. Oynatici SDR icerige BT.2020 donusumu uygulayinca
+    # goruntu asiri doygun ve KIRMIZIYA calan hale geliyor.
+    # (8-bit ciktida bu olmuyor; sorun 10-bit + etiketsiz kaynak birlesimi.)
+    #
+    # Cozum: etiket yoksa BT.709 damgala. SD/HD SDR icerigin tamami BT.709'dur;
+    # gercekten HDR olan kaynaklar ZATEN etiketlidir ve onlara dokunulmaz.
+    # "-color_* cikis secenekleri" denendi, tam oturmadi (transfer/primaries
+    # "unknown" kaliyordu); setparams filtresi ucunu de dogru yaziyor.
+    if probes.get("renk_etiketsiz"):
+        vf_filters.append("setparams=color_primaries=bt709:color_trc=bt709"
+                          ":colorspace=bt709:range=tv")
+        notes.append("🎨 Kaynakta renk etiketi yok; çıktı BT.709 olarak "
+                     "işaretlendi (etiketsiz bırakılırsa oynatıcılar HDR "
+                     "sanıp renkleri bozuyor).")
 
     return vf_filters, notes
 
@@ -1607,6 +1634,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         "sub_lang": list(SUB_DIL_SECENEKLERI),
         "sub_charenc": list(SUB_CHARENC_SECENEKLERI),
         "amf_quality": AMF_QUALITY_VALUES,
+        "cozucu": list(COZUCU_SECENEKLERI),
     }
 
     def _create_audio_card(self, parent, tab_vars, pady):
@@ -1976,6 +2004,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # NVENC'e ozel salterler AMF'de yok; kart kurulurken sorulmasin diye
         # degiskenleri birakiyoruz ama komuta girmiyorlar (bkz. build_command).
         tab_vars["amf_quality"] = ctk.StringVar(value="quality")
+        tab_vars["cozucu"] = ctk.StringVar(value=list(COZUCU_SECENEKLERI)[0])
         tab_vars.update(self._tab_meta(is_pure_cuda=False, is_vp9=False,
                                        accent=("#c0392b", "#922b21", "white")))
         self.tabs[tab_name] = tab_vars
@@ -2003,7 +2032,17 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         card_amf.pack(fill="x", pady=10)
         ctk.CTkLabel(card_amf, text="Kalite Ön Ayarı:").pack(anchor="w", padx=15)
         ReadOnlyComboBox(card_amf, variable=tab_vars["amf_quality"],
-                         values=AMF_QUALITY_VALUES).pack(fill="x", padx=15, pady=(0, 15))
+                         values=AMF_QUALITY_VALUES).pack(fill="x", padx=15, pady=(0, 10))
+
+        ctk.CTkLabel(card_amf, text="Kod çözücü (decoder):").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_amf, variable=tab_vars["cozucu"],
+                         values=list(COZUCU_SECENEKLERI)).pack(fill="x", padx=15, pady=(0, 5))
+        ctk.CTkLabel(card_amf,
+                     text="Otomatik: AV1 kaynakta yazılım, diğerlerinde GPU.\n"
+                          "Donanım CPU'yu rahatlatır ama ölçümde AV1'de %25 yavaştı;\n"
+                          "yazılım hızlıdır ama işlemciyi çalıştırır.",
+                     font=("Arial", 10, "italic"), text_color="gray",
+                     justify="left", anchor="w").pack(anchor="w", padx=15, pady=(0, 12))
 
         lbl_cq_title = ctk.CTkLabel(card_amf, text=f"QP (Kalite): {tab_vars['cq'].get()}",
                                     font=("Arial", 13, "bold"))
@@ -2762,6 +2801,34 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         except Exception:
             return ""
 
+    def renk_etiketi_var_mi(self, filepath):
+        """
+        Kaynakta renk metadata'si (primaries/transfer/matrix) tanimli mi?
+
+        Tanimsizsa cikti yanlis etiketleniyor: olculdu, etiketsiz 8-bit bir
+        kaynak 10-bit'e cevrilince cikti BT.2020 + SMPTE2084 (HDR) damgasi
+        aliyor ve goruntu kirmiziya caliyor. Bkz. build_filters.
+        """
+        try:
+            cmd = [FFPROBE_BIN, '-v', 'error', '-select_streams', 'v:0',
+                   '-show_entries',
+                   'stream=color_primaries,color_transfer,color_space',
+                   '-of', 'default=noprint_wrappers=1:nokey=1', filepath]
+            result = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            degerler = [s.strip().lower() for s in result.stdout.splitlines() if s.strip()]
+            if not degerler:
+                return False
+            # ffprobe tanimsiz alanlar icin "unknown"/"N/A" dondurur
+            return any(d not in ("unknown", "n/a", "unspecified", "reserved")
+                       for d in degerler)
+        except Exception:
+            # Okunamadiysa etiket VAR say: gereksiz yere damgalamak, dogru
+            # etiketli bir HDR kaynagi BT.709'a cevirmekten daha risklidir.
+            return True
+
     def get_video_pix_fmt(self, filepath):
         """Kaynak videonun piksel formatini dondurur (bulunamazsa '')."""
         try:
@@ -3108,10 +3175,16 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # kullanilir, hicbiri yoksa yazilim cozucusune dusulur.
         def amd_cozucu():
             """
-            AMD'de donanim cozucusu HER KAYNAKTA kazandirmiyor; kaynagin
-            kodegine bakip karar veriyoruz (bkz. D3D11VA_ISTEMEYEN_KODEKLER).
+            AMD'de donanim cozucusu HER KAYNAKTA kazandirmiyor. Varsayilan
+            "Otomatik" kaynagin kodegine bakar (bkz. D3D11VA_ISTEMEYEN_KODEKLER);
+            kullanici sekmeden elle de zorlayabilir.
             ffprobe yalnizca bu dal icin calisir, NVIDIA makinesinde degil.
             """
+            tercih = COZUCU_SECENEKLERI.get(oku("cozucu", ""), "oto")
+            if tercih == "donanim":
+                return "d3d11va"
+            if tercih == "yazilim":
+                return ""
             kaynak = self.get_video_codec(cfg["input_file"])
             return "" if kaynak in D3D11VA_ISTEMEYEN_KODEKLER else "d3d11va"
 
@@ -3403,6 +3476,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             probes = {
                 "cuda_frames": cuda_frames,
                 "pix_fmt": kaynak_pix,
+                # Remux'ta kare hic dokunulmadigi icin etiket de aynen kalir.
+                "renk_etiketsiz": (False if is_remux
+                                   else not self.renk_etiketi_var_mi(input_file)),
                 "sub_codecs": gomulu_subs,
                 "sub_charenc": sub_charenc,
                 "sub_needs_transcode": sub_cevrim,
