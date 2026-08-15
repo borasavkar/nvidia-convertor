@@ -466,6 +466,21 @@ def get_cq_range(codec, scale):
     return codec_ranges.get(scale, codec_ranges["default"])
 
 
+def komut_metni(cmd):
+    """
+    Komutu KOPYALANIP CALISTIRILABILIR bicimde metne cevirir.
+
+    Uygulama komutu kabuktan gecirmez (subprocess'e liste verilir), o yuzden
+    calisma acisindan tirnaga gerek yok. Ama loga duz " ".join() ile yazinca
+    bosluklu yollar bozuluyor ve kullanici komutu terminale yapistirinca
+    calismiyordu - hata ararken en cok isine yarayacak sey tam da bu.
+    """
+    parcalar = []
+    for p in cmd:
+        parcalar.append(f'"{p}"' if (" " in p or "\t" in p) else p)
+    return " ".join(parcalar)
+
+
 def get_cq_default(codec, scale):
     """
     Sekme acildiginda kullanilacak CQ/QP: onerilen araligin ALT SINIRI, yani
@@ -3401,7 +3416,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
             self._thread_safe_log("=" * 60)
             self._thread_safe_log(f"🎬 İŞLEM BAŞLIYOR: {active_tab_name} Sekmesi")
-            self._thread_safe_log(f"⚙️ ÇALIŞTIRILAN FFmpeg KOMUTU:\n{' '.join(cmd)}")
+            self._thread_safe_log(f"⚙️ ÇALIŞTIRILAN FFmpeg KOMUTU:\n{komut_metni(cmd)}")
             self._thread_safe_log("=" * 60)
 
             # Saf builder mantiksal "ffmpeg" adini uretir (log okunakli kalsin);

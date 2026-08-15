@@ -494,6 +494,23 @@ def test_amd_kullanildigi_bildirilir():
     assert any("AMD" in n for n in notes)
 
 
+# ---------------------------------------------------------------- log metni
+def test_loglanan_komut_bosluklu_yollari_tirnakliyor():
+    """
+    Komut kabuktan gecmedigi icin CALISMASI tirnak istemiyor; ama loga duz
+    join ile yazilinca kullanici kopyalayip terminale yapistiramiyordu.
+    """
+    metin = nv.komut_metni(["ffmpeg", "-i", r"C:\Video Klasoru\a b.mkv", "-y", "out.mkv"])
+    assert '"C:\\Video Klasoru\\a b.mkv"' in metin
+    assert metin.startswith("ffmpeg -i ")
+    assert '"out.mkv"' not in metin      # bosluksuzlar tirnaklanmaz
+
+
+def test_loglanan_komut_gercek_bir_isten_uretilebiliyor():
+    cmd, _ = nv.build_command(cfg(input_file=r"C:\a b\v.mkv"), probes())
+    assert '"C:\\a b\\v.mkv"' in nv.komut_metni(cmd)
+
+
 # ---------------------------------------------------------------- hwaccel
 def test_hwaccel_markaya_gore_secilir():
     """
