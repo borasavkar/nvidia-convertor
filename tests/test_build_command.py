@@ -417,10 +417,30 @@ def test_amf_minimum_kare_uygulama_secenekleriyle_uyumlu():
     assert round(en_kucuk * 9 / 16) >= nv.AMF_MIN_YUKSEKLIK
 
 
-def test_amd_yuksek_cozunurlukte_qp_araligi_yukselir():
-    """Olculen egilim: cozunurluk arttikca ayni kalite daha yuksek QP'de saglaniyor."""
+def test_amd_dusuk_cozunurlukte_qp_araligi_dusuyor():
+    """
+    480p -> 1080p arasinda olculen egilim: cozunurluk arttikca ayni kalite
+    daha yuksek QP'de saglaniyor.
+
+    DIKKAT: bu egilim 1080p'nin USTUNE UZATILAMAZ. Once oyle yapip 4K satirini
+    turetmistim (av1 icin 156-172) ve gercek 4K icerik bunu curuttu: QP144
+    bile VMAF 82.8 verdi. Egim, ayni kaynagin KUCULTULMUS hallerinden
+    cikmisti; kucultunce detay yogunlasir, yukari dogru gecerli degil.
+    """
     for codec in ("hevc_amf", "h264_amf", "av1_amf"):
         assert nv.get_cq_range(codec, "480p")[0] <= nv.get_cq_range(codec, "1080p")[0], codec
+
+
+def test_av1_4k_satiri_TURETILMIS_DEGIL_olculmus():
+    """
+    4K satiri gercek 4K olcumunden gelir, 1080p'den uzatilarak DEGIL.
+    Turetilmis deger (156, 172) idi ve kanitla celisti; bu test onun geri
+    gelmesini engeller.
+    """
+    dort_k = nv.get_cq_range("av1_amf", "4K")
+    assert dort_k == (70, 104), dort_k
+    # Turetme "4K'da daha YUKSEK QP" diyordu; olcum tersini soyledi.
+    assert dort_k[0] < nv.get_cq_range("av1_amf", "1080p")[0]
 
 
 @pytest.mark.parametrize("ten_bit,beklenen", [(True, "p010le"), (False, "nv12")])
