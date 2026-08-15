@@ -406,15 +406,105 @@ def test_amd_tablolari_nvenc_tablosundan_KOPYA_DEGIL():
 
 def test_amf_minimum_kare_uygulama_secenekleriyle_uyumlu():
     """
-    Olculdu: hevc_amf 352 genislikte cokuyor, 384'te calisiyor; hevc/av1 96
-    yukseklikte cokuyor, 128'de calisiyor. Uygulamanin EN KUCUK olcekleme
-    secenegi (240p = 426x240) bu sinirlarin ustunde olmali, yoksa kullanici
-    listeden secebildigi bir cozunurlukte "Init() failed error 5" alir.
+    Uygulamanin EN KUCUK olcekleme secenegi (240p = 426x240) her AMD kodeginin
+    sinirinin ustunde olmali, yoksa kullanici listeden secebildigi bir
+    cozunurlukte "Init() failed error 5" alir.
     """
     en_kucuk = min(nv.SCALE_MAP.values())          # 240p -> 426
-    assert en_kucuk >= nv.AMF_MIN_GENISLIK
-    # 240p'nin 16:9 kisa kenari da sinirin ustunde mi?
-    assert round(en_kucuk * 9 / 16) >= nv.AMF_MIN_YUKSEKLIK
+    for kodek, (min_w, min_h) in nv.AMF_MIN_KARE.items():
+        assert en_kucuk >= min_w, kodek
+        # 240p'nin 16:9 kisa kenari da sinirin ustunde mi?
+        assert round(en_kucuk * 9 / 16) >= min_h, kodek
+
+
+def test_amf_minimum_kare_kodege_gore_AYRI():
+    """
+    Olculdu (RX 9070 XT, ffmpeg 9.0.1, 2 piksellik adimlarla tarandi):
+    h264 96x32, av1 320x128, hevc 384x128. Uc kodege tek bir "en kotu durum"
+    degeri uygulanirsa h264/av1'in SORUNSUZ kodladigi dosyalar engellenir --
+    kusur tam olarak buydu: 320x240 bir kaynakta uc AMD sekmesi de "cok kucuk"
+    diyordu, oysa yalnizca H.265 cokuyor.
+    """
+    assert nv.AMF_MIN_KARE["h264_amf"] == (96, 32)
+    assert nv.AMF_MIN_KARE["av1_amf"] == (320, 128)
+    assert nv.AMF_MIN_KARE["hevc_amf"] == (384, 128)
+    # Tablo AMF_CODECS ile ayni kumeyi kapsamali; eksik anahtar KeyError verir.
+    assert set(nv.AMF_MIN_KARE) == set(nv.AMF_CODECS) == set(nv.AMF_SEKME_ADI)
+
+
+def test_amf_kabul_eden_sekmeler_olculen_sinirlara_uyuyor():
+    """Kullanicinin gercek dosyasi (320x240) H.264 ve AV1'de kodlanabiliyor."""
+    assert nv.amf_kabul_eden_sekmeler(320, 240) == ["AV1 (AMD)", "H.264 (AMD)"]
+    assert nv.amf_kabul_eden_sekmeler(384, 240) == ["AV1 (AMD)", "H.265 (AMD)",
+                                                    "H.264 (AMD)"]
+    # Dikey video: 240p'de genislik 240 kalir, yalnizca h264 kabul eder.
+    assert nv.amf_kabul_eden_sekmeler(240, 426) == ["H.264 (AMD)"]
+    # h264'un de altinda kalan kare: hicbir donanim sekmesi kodlayamaz.
+    assert nv.amf_kabul_eden_sekmeler(64, 32) == []
+
+
+def _sorun(**kw):
+    """_job_sorunu'yu arayuz olmadan cagirir (fonksiyon self kullanmiyor)."""
+    c = amd_cfg(input_file=os.path.abspath(__file__), output_dir="",
+                is_remux=False, trim_start="", trim_end="", **kw)
+    return nv.FFmpegStudioPro._job_sorunu(None, c)
+
+
+def test_kucuk_kare_calisan_sekmede_ENGELLENMEZ():
+    """Ana kusur: 320x240 kaynak h264/av1'de calisirken de engelleniyordu."""
+    assert _sorun(codec_v="h264_amf", cikti_boyutu=(320, 240)) is None
+    assert _sorun(codec_v="av1_amf", cikti_boyutu=(320, 240)) is None
+    # h264'un kendi sinirinin altinda ise yine engellenir.
+    assert _sorun(codec_v="h264_amf", cikti_boyutu=(64, 240)) is not None
+
+
+def test_kucuk_kare_uyarisi_CALISAN_SEKMEYI_onerir():
+    """
+    Uyari cikmak zorundaysa (H.265, 320x240) tavsiye ise yarar olmali:
+    kullaniciyi VP9'a (CPU, kat kat yavas) yollamadan once kareyi oldugu gibi
+    kabul eden donanim sekmelerini soylemeli.
+    """
+    baslik, metin = _sorun(codec_v="hevc_amf", cikti_boyutu=(320, 240))
+    assert "H.265 (AMD)" in baslik
+    assert "320x240" in metin and "384x128" in metin
+    assert "AV1 (AMD)" in metin and "H.264 (AMD)" in metin
+    assert "VP9" not in metin          # calisan donanim yolu varken gereksiz
+
+
+def test_hicbir_amd_sekmesi_kodlayamiyorsa_VP9_onerilir():
+    """h264'un de altindaki kare: tek cikis CPU (VP9) ya da buyutme."""
+    _, metin = _sorun(codec_v="hevc_amf", cikti_boyutu=(64, 32))
+    assert "VP9" in metin
+
+
+def test_orijinal_secilince_band_KAYNAGIN_cozunurlugunden_gelir():
+    """
+    Kusur: "Orijinal" tabloda bir satir adi degil, o yuzden dogrudan "default"
+    (1080p turevi) satira dusuluyordu. 4K bir kaynakta bu sessizce yanlis
+    tavsiye uretiyordu -- av1_amf'te olculen 4K bandi 70-104 iken sekme
+    144'te aciliyor ve 144, gercek 4K icerikte VMAF 90'in ALTINA denk geliyor.
+    """
+    assert nv.get_cq_range("av1_amf", "Orijinal") == (144, 160)          # kaynak bilinmiyor
+    assert nv.get_cq_range("av1_amf", "Orijinal", (3840, 2160)) == (70, 104)
+    assert nv.get_cq_default("av1_amf", "Orijinal", (3840, 2160)) == 70
+    # Kucuk kaynak da dogru bandi almali (kullanicinin 320x240 dosyasi).
+    assert nv.get_cq_range("av1_amf", "Orijinal", (320, 240)) == (115, 136)
+    # Acikca bir olcek secildiyse kaynak boyutu KARISMAZ.
+    assert nv.get_cq_range("av1_amf", "1080p", (3840, 2160)) == (144, 160)
+
+
+def test_cozunurluk_bandi_en_yakin_satiri_secer():
+    assert nv.cozunurluk_bandi(3840, 2160) == "4K"
+    assert nv.cozunurluk_bandi(1920, 1080) == "1080p"
+    assert nv.cozunurluk_bandi(2160, 3840) == "4K"        # dikey video
+    assert nv.cozunurluk_bandi(320, 240) == "240p"        # en kucuk satirin altinda
+    assert nv.cozunurluk_bandi(7680, 4320) == "4K"        # olcum yok: en yakin satir
+    assert nv.cozunurluk_bandi(3500, 1970) == "4K"        # 1440p'den cok 4K'ya yakin
+    assert nv.cozunurluk_bandi(0, 0) is None              # okunamadi
+    # Tablodaki her satirin karsiligi CQ_RANGES'te GERCEKTEN olmali.
+    for ad in nv.SCALE_MAP:
+        for kodek in nv.CQ_RANGES:
+            assert ad in nv.CQ_RANGES[kodek], (kodek, ad)
 
 
 def test_amd_dusuk_cozunurlukte_qp_araligi_dusuyor():

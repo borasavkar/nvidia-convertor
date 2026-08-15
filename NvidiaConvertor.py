@@ -316,6 +316,15 @@ H264_LEVEL = "5.1"    # 4.2 (auto) -> tavan kalkar; 6.2 ile ayni sonucu verdi
 
 NVIDIA, AMD = "nvidia", "amd"
 
+# AMD (AMF) sekmelerinin TEK kaynagi. Sekmeler bundan uretilir, markaya gore
+# gizleme listesi de, hata mesajlarinin "su sekmeyi kullanin" onerisi de.
+# Ayri ayri yazilsalardi bir yeniden adlandirma otekini sessizce eskitirdi.
+AMF_SEKME_ADI = {
+    "av1_amf": "AV1 (AMD)",
+    "hevc_amf": "H.265 (AMD)",
+    "h264_amf": "H.264 (AMD)",
+}
+
 DONANIM = {
     NVIDIA: {
         "ad": "NVIDIA",
@@ -328,7 +337,7 @@ DONANIM = {
     AMD: {
         "ad": "AMD",
         "deneme": "hevc_amf",
-        "sekmeler": ("AV1 (AMD)", "H.265 (AMD)", "H.264 (AMD)"),
+        "sekmeler": tuple(AMF_SEKME_ADI.values()),
     },
 }
 
@@ -343,7 +352,7 @@ DENEME_BOYUTU = "640x360"
 
 # AMF kalite onayarlari (-quality). NVENC'in p1..p7'sinin karsiligi.
 AMF_QUALITY_VALUES = ["quality", "balanced", "speed", "high_quality"]
-AMF_CODECS = ("hevc_amf", "av1_amf", "h264_amf")
+AMF_CODECS = tuple(AMF_SEKME_ADI)
 
 # AMF'de B-kare QP'sini AYRI alan kodlayicilar. hevc_amf'te boyle bir secenek
 # YOK; olmayanina vermek "not used for any stream" uyarisi uretir.
@@ -358,13 +367,42 @@ AMF_QP_TAVANI_VARSAYILAN = 51
 
 # VCN'in kabul ettigi en kucuk kare. Altina inilirse ffmpeg yalnizca
 # "encoder->Init() failed with error 5" der; sebebini anlamak imkansiz.
-# OLCULDU (RX 9070 XT): en kisitlayici olan hevc_amf 352 genislikte cokup
-# 384'te calisiyor; hevc ve av1 96 yukseklikte cokup 128'de calisiyor.
-# Uygulamanin en kucuk secenegi 240p (426x240) bu sinirlarin ustunde, yani
-# olcekleme secenekleri guvenli; sinir yalnizca KUCUK KAYNAK + "Orijinal"
-# birlesiminde isiriyor.
-AMF_MIN_GENISLIK = 384
-AMF_MIN_YUKSEKLIK = 128
+#
+# SINIR KODEGE GORE COK FARKLI. OLCULDU (RX 9070 XT, ffmpeg 9.0.1): her kodek
+# 2 piksellik adimlarla tarandi, sinir KESKIN cikti (hizalama kurali degil,
+# duz bir alt sinir) ve iki boyut birbirinden bagimsiz:
+#     h264_amf :  96 x  32   (94 ve 30'da coker)
+#     av1_amf  : 320 x 128   (318 ve 126'da coker)
+#     hevc_amf : 384 x 128   (382 ve 126'da coker)
+#
+# ONCEDEN UCUNE DE EN KOTU DURUM (384x128) UYGULANIYORDU ve bu, h264/av1'in
+# sorunsuz kodladigi dosyalari da engelliyordu: 320x240 bir kaynakta uc AMD
+# sekmesi de "cok kucuk" diyordu, oysa yalnizca H.265 gercekten cokuyor
+# (uygulamanin kendi komutuyla ucu de kosularak dogrulandi).
+#
+# Uygulamanin en kucuk olcekleme secenegi 240p uzun kenari 426 yapar, yani
+# YATAY videoda olcekleme secenekleri guvenli. Sinir iki durumda isirir:
+# kucuk kaynak + "Orijinal", ve DIKEY video (uzun kenar yukseklige gidince
+# genislik 240p'de 240, 360p'de 360 kalir; hevc 384 ister).
+AMF_MIN_KARE = {
+    "h264_amf": (96, 32),
+    "av1_amf": (320, 128),
+    "hevc_amf": (384, 128),
+}
+
+
+def amf_kabul_eden_sekmeler(w, h):
+    """
+    Verilen kareyi kodlayabilen AMD sekmelerinin adlari. SAF FONKSIYON.
+
+    "Cok kucuk" uyarisi bunu kullanir: kullaniciyi VP9'a (CPU, kat kat yavas)
+    ya da cozunurluk degistirmeye yollamadan once, kareyi OLDUGU GIBI kabul
+    eden bir donanim sekmesi var mi diye bakariz. Sira AMF_SEKME_ADI'ndan
+    gelir; once kalite/verim acisindan tercih edilen kodek onerilir.
+    """
+    return [ad for kod, ad in AMF_SEKME_ADI.items()
+            if w >= AMF_MIN_KARE[kod][0] and h >= AMF_MIN_KARE[kod][1]]
+
 
 # Bazi kaynak kodeklerinde DONANIM cozucusu zarar veriyor; bu sezgiye ters
 # oldugu icin olculerek bulundu (RX 9070 XT, 1080p, 3'er kosu, cikti bayt
@@ -499,8 +537,37 @@ SUB_DIL_SECENEKLERI = {
 }
 
 
-def get_cq_range(codec, scale):
+def cozunurluk_bandi(w, h):
+    """
+    Bir kareye EN YAKIN CQ tablosu satirini secer ("4K", "1080p", ...).
+    Boyut bilinmiyorsa None. SAF FONKSIYON.
+
+    Neden gerekli: kullanici "Orijinal" secince tabloda o adda satir YOK ve
+    eskiden dogrudan "default" satira dusuluyordu. "default" 1080p turevidir,
+    yani cozunurluk ne olursa olsun 1080p tavsiyesi veriliyordu. 4K bir
+    kaynakta bu sessizce yanlis: av1_amf'te OLCULEN 4K bandi 70-104 iken sekme
+    144'te aciliyordu ve 144, gercek 4K icerikte VMAF 90'in ALTINA denk
+    geliyor (bkz. CQ_RANGES av1_amf notu).
+
+    Satir uzun kenara gore ve EN YAKIN olan secilir (buyuk-esit degil): 3500
+    piksellik bir kaynak 1440p'den cok 4K'ya benzer. 3840'in ustu (8K vb.)
+    icin olcum YOK; en yakin satir olarak 4K kullanilir.
+    """
+    uzun = max(w or 0, h or 0)
+    if uzun <= 0:
+        return None
+    return min(SCALE_MAP, key=lambda ad: abs(SCALE_MAP[ad] - uzun))
+
+
+def get_cq_range(codec, scale, kaynak_boyut=None):
+    """
+    Onerilen CQ/QP araligi. "Orijinal" secildiyse ve kaynagin boyutu
+    biliniyorsa band KAYNAGIN cozunurlugunden turer (bkz. cozunurluk_bandi).
+    kaynak_boyut verilmezse eski davranis: "default" satiri.
+    """
     codec_ranges = CQ_RANGES.get(codec, CQ_RANGES["hevc_nvenc"])
+    if scale == "Orijinal" and kaynak_boyut:
+        scale = cozunurluk_bandi(*kaynak_boyut) or scale
     return codec_ranges.get(scale, codec_ranges["default"])
 
 
@@ -519,12 +586,12 @@ def komut_metni(cmd):
     return " ".join(parcalar)
 
 
-def get_cq_default(codec, scale):
+def get_cq_default(codec, scale, kaynak_boyut=None):
     """
     Sekme acildiginda kullanilacak CQ/QP: onerilen araligin ALT SINIRI, yani
     bandin EN YUKSEK KALITE ucu. Kullanici oradan istedigi kadar asagi iner.
     """
-    return get_cq_range(codec, scale)[0]
+    return get_cq_range(codec, scale, kaynak_boyut)[0]
 
 
 def parse_time(metin):
@@ -1265,6 +1332,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # --- KUYRUK VE KALICI AYARLAR ---
         self.job_queue = []          # collect_config() anlik goruntuleri
         self.cq_refreshers = {}      # sekme adi -> CQ etiketini tazeleyen callback
+        # "Orijinal" secildiginde onerilen CQ bandi kaynagin cozunurlugundan
+        # gelir; onbellek SART, cunku etiket kaydirici her oynadiginda
+        # tazeleniyor ve her seferinde ffprobe kosmak arayuzu kilitlerdi.
+        self._cq_boyut_onbellek = (None, None)   # (dosya yolu, (w, h))
         # {marka: True/False} - acilista OLCULUR (bkz. donanimi_uygula).
         # Tarama bitene kadar bos: hicbir sey varsayilmaz.
         self.donanim = {}
@@ -1304,6 +1375,11 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         self.video_path = ctk.StringVar()
         self.sub_path = ctk.StringVar()
+        # Dosya degisince onerilen CQ bandi da degisir (band kaynagin
+        # cozunurlugunden turuyor). Trace kullaniliyor ki hem dosya secme
+        # penceresi hem surukle-birak hem de ileride eklenecek her yol ayni
+        # tazelemeyi tetiklesin.
+        self.video_path.trace_add("write", lambda *a: self._refresh_all_cq_displays())
 
         # --- KÖK YERLEŞİM ---
         # Ayar kartları + sekmeler tek başına ~1200 px istiyor; bu 1080p bir
@@ -1457,9 +1533,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.create_tab("AV1 (Standart)", "av1_nvenc")
         self.create_tab("H.265 (Standart)", "hevc_nvenc")
         self.create_tab("H.264 (Standart)", "h264_nvenc")
-        self.create_amd_tab("AV1 (AMD)", "av1_amf")
-        self.create_amd_tab("H.265 (AMD)", "hevc_amf")
-        self.create_amd_tab("H.264 (AMD)", "h264_amf")
+        # Sekme adlari AMF_SEKME_ADI'ndan gelir: "cok kucuk" uyarisi kullaniciyi
+        # ada gore yonlendiriyor, iki yerde ayri yazilsa biri eskirdi.
+        for amf_kodek, amf_sekme in AMF_SEKME_ADI.items():
+            self.create_amd_tab(amf_sekme, amf_kodek)
         self.create_vp9_tab("VP9 (Google VOD)")
         self.create_cuda_tab("⚡ SAF CUDA")
         self.create_remux_tab("💬 SADECE ALTYAZI")
@@ -1835,6 +1912,11 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "audio_bitrate": ctk.StringVar(value="128k"),
             "preset": ctk.StringVar(value="p7"),
             "cq": ctk.IntVar(value=cq_default),
+            # Tk degiskeni DEGIL, duz sayi: en son OTOMATIK konan CQ. Dosya
+            # degisince kadrani ancak kullanici ellememisse tazeliyoruz ve
+            # bunu anlamanin tek yolu bu (bkz. _update_cq_display). Ayarlar
+            # kaydedilirken suzuluyor (hasattr(v, "get") kosulu).
+            "cq_auto": cq_default,
             "scale": ctk.StringVar(value="Orijinal"),
             "metadata_title": ctk.StringVar(value=""),
             "metadata_artist": ctk.StringVar(value=""),
@@ -1882,26 +1964,64 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     # =======================================================
     # ORTAK CQ SLIDER GÜNCELLEME
     # =======================================================
+    def _kaynak_boyut_cq(self):
+        """
+        CQ bandi icin kaynagin (genislik, yukseklik) degeri; yoksa None.
+        Onbellekli: bkz. _cq_boyut_onbellek.
+        """
+        yol = self.video_path.get()
+        if not yol or not os.path.isfile(yol):
+            return None
+        if self._cq_boyut_onbellek[0] != yol:
+            self._cq_boyut_onbellek = (yol, self.get_video_resolution(yol))
+        boyut = self._cq_boyut_onbellek[1]
+        return boyut if boyut and boyut[0] and boyut[1] else None
+
     def _update_cq_display(self, codec, tab_vars, lbl_cq_title, lbl_cq_status, slider_cq, label_prefix="CQ (Kalite)"):
         v = int(float(tab_vars["cq"].get()))
-        lbl_cq_title.configure(text=f"{label_prefix}: {v}")
-
         current_scale = tab_vars["scale"].get()
 
-        min_cq, max_cq = get_cq_range(codec, current_scale)
+        kaynak = self._kaynak_boyut_cq()
+        min_cq, max_cq = get_cq_range(codec, current_scale, kaynak)
+
+        # "Orijinal"de band kaynagin cozunurlugundan geldigi icin DOSYA
+        # DEGISINCE kayar. Kullanici kadrani ELLEMEDIYSE (deger hala en son
+        # otomatik konan degerse) yeni bandin kalite ucuna otur; elle bir
+        # deger sectiyse ASLA dokunma. Bu olmadan sekme 1080p varsayilaniyla
+        # aciliyor ve 4K bir dosya yuklenince kirmizi uyarida oylece
+        # bekliyordu -- kullanicinin fark etmesi gerekiyordu.
+        if tab_vars.get("cq_auto") is not None and v == tab_vars["cq_auto"] and v != min_cq:
+            v = min_cq
+            tab_vars["cq_auto"] = v
+            tab_vars["cq"].set(v)
+            slider_cq.set(v)
+
+        lbl_cq_title.configure(text=f"{label_prefix}: {v}")
+
+        # Bandin neye gore secildigini yaz: "Orijinal"de sayilar kaynaga gore
+        # degisiyor ve sebebi gorunmezse kullanici kadranin kendiliginden
+        # oynadigini saniyor.
+        band_eki = ""
+        if current_scale == "Orijinal" and kaynak:
+            ad = cozunurluk_bandi(*kaynak)
+            if ad:
+                band_eki = f" — {ad} kaynak"
 
         if min_cq <= v <= max_cq:
-            lbl_cq_status.configure(text=f"✨ Önerilen Aralık ({min_cq}-{max_cq})", text_color="#00FF00")
+            lbl_cq_status.configure(text=f"✨ Önerilen Aralık ({min_cq}-{max_cq}){band_eki}", text_color="#00FF00")
             slider_cq.configure(progress_color="#00FF00")
         elif v < min_cq:
-            lbl_cq_status.configure(text=f"⚠️ Gereksiz Büyük Dosya (< {min_cq})", text_color="#FFA500")
+            lbl_cq_status.configure(text=f"⚠️ Gereksiz Büyük Dosya (< {min_cq}){band_eki}", text_color="#FFA500")
             slider_cq.configure(progress_color="#FFA500")
         else:
-            lbl_cq_status.configure(text=f"❌ Çamurlaşma Riski (> {max_cq})", text_color="#FF4444")
+            lbl_cq_status.configure(text=f"❌ Çamurlaşma Riski (> {max_cq}){band_eki}", text_color="#FF4444")
             slider_cq.configure(progress_color="#FF4444")
 
     def _auto_set_cq(self, codec, scale, tab_vars, slider_cq, lbl_cq_title, lbl_cq_status, label_prefix="CQ (Kalite)"):
-        val = get_cq_default(codec, scale)
+        val = get_cq_default(codec, scale, self._kaynak_boyut_cq())
+        # Otomatik konan degeri isaretle: kullanicinin elle sectigi bir degeri
+        # dosya degisiminde ezmemek icin tek dayanak bu (bkz. _update_cq_display).
+        tab_vars["cq_auto"] = val
         tab_vars["cq"].set(val)
         slider_cq.set(val)
         self._update_cq_display(codec, tab_vars, lbl_cq_title, lbl_cq_status, slider_cq, label_prefix)
@@ -1918,6 +2038,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "container": ctk.StringVar(value="webm"),
             "audio_bitrate": ctk.StringVar(value="128k"),
             "cq": ctk.IntVar(value=31),
+            "cq_auto": 31,          # bkz. _nvenc_tab_vars: elle secim korumasi
             "scale": ctk.StringVar(value="Orijinal"),
             "vp9_quality": ctk.StringVar(value="good (Önerilen)"),
             "vp9_speed": ctk.StringVar(value="1 (VOD Önerisi)"),
@@ -3339,14 +3460,30 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         # AMD donanim kodlayicisi cok kucuk kareyi kabul etmiyor. Onlemezsek
         # kullanici yalnizca "encoder->Init() failed with error 5" goruyor.
+        #
+        # Sinir KODEGE GORE degisir (bkz. AMF_MIN_KARE): ayni kare H.265'te
+        # cokerken H.264 ve AV1'de sorunsuz kodlaniyor. Eskiden ucune de en
+        # kotu durum uygulandigi icin calisan sekmeler de engelleniyordu.
         if cfg["codec_v"] in AMF_CODECS and cfg.get("cikti_boyutu"):
             w, h = cfg["cikti_boyutu"]
-            if w and h and (w < AMF_MIN_GENISLIK or h < AMF_MIN_YUKSEKLIK):
-                # Tavsiye DURUMA GORE degisir. "Daha yuksek cozunurluk secin"
-                # demek tek basina cikmaz sokak: buyutme korumasi acikken
-                # secilen cozunurluk sessizce "Orijinal"e geri donuyor ve
-                # kullanici ayni hatayi tekrar aliyor.
-                if cfg.get("upscale_blocked"):
+            min_w, min_h = AMF_MIN_KARE[cfg["codec_v"]]
+            if w and h and (w < min_w or h < min_h):
+                sekme = AMF_SEKME_ADI[cfg["codec_v"]]
+                # Tavsiye DURUMA GORE degisir; hepsi ayni sirayla denenir.
+                calisan = amf_kabul_eden_sekmeler(w, h)
+                if calisan:
+                    # En iyi cikis yolu: kareyi oldugu gibi kabul eden bir
+                    # donanim sekmesi. Ne yeniden olcekleme, ne CPU'ya dusme.
+                    oneri = (f"Bu dosya {' ya da '.join(calisan)} sekmesinde "
+                             "OLDUĞU GİBİ dönüşür; çözünürlüğü değiştirmeniz "
+                             "gerekmez.\n\nBu sekmede kalmak isterseniz daha "
+                             "yüksek bir çözünürlük seçin ('Kaynaktan büyütme "
+                             "yapma' şalteri kapalı olmalı).")
+                elif cfg.get("upscale_blocked"):
+                    # "Daha yuksek cozunurluk secin" demek tek basina cikmaz
+                    # sokak: buyutme korumasi acikken secilen cozunurluk
+                    # sessizce "Orijinal"e donuyor ve kullanici ayni hatayi
+                    # tekrar aliyor.
                     oneri = ("Daha yüksek bir çözünürlük seçtiniz ama "
                              "'Kaynaktan büyütme yapma' şalteri açık olduğu için "
                              "uygulanmadı.\n\nO şalteri kapatın ya da bu dosyayı "
@@ -3356,10 +3493,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                              "'Kaynaktan büyütme yapma' şalterini de kapatmanız "
                              "gerekir.\n\nYa da bu dosyayı VP9 (CPU) sekmesiyle "
                              "dönüştürün; orada böyle bir sınır yok.")
-                return ("Görüntü AMD Kodlayıcı İçin Çok Küçük",
-                        f"Çıkacak kare {w}x{h}. AMD donanım kodlayıcısı en az "
-                        f"{AMF_MIN_GENISLIK}x{AMF_MIN_YUKSEKLIK} ister ve bunun "
-                        f"altında hata verip durur.\n\n{oneri}")
+                return (f"Görüntü {sekme} İçin Çok Küçük",
+                        f"Çıkacak kare {w}x{h}. {sekme} kodlayıcısı en az "
+                        f"{min_w}x{min_h} ister ve bunun altında hata verip "
+                        f"durur.\n\n{oneri}")
 
         if cfg["is_remux"]:
             if not cfg["sub_file"]:
