@@ -384,9 +384,39 @@ D3D11VA_ISTEMEYEN_KODEKLER = frozenset({"av1"})
 # digerleri kullanicinin bilinçli secimidir (dusuk CPU mu, kisa sure mi).
 COZUCU_SECENEKLERI = {
     "Otomatik (ölçüme göre)": "oto",
+    "TAM GPU hattı (AMF, kopyasız)": "tamgpu",
     "Donanım - GPU (d3d11va)": "donanim",
     "Yazılım - CPU (dav1d vb.)": "yazilim",
 }
+
+# TAM GPU HATTI (AMF -> AMF, kopyasiz)
+# ------------------------------------
+# "-hwaccel amf -hwaccel_output_format amf": kare cozuldukten sonra AMF
+# yuzeyi olarak kalir ve dogrudan AMF kodlayicisina gider; GPU<->sistem
+# bellegi kopyasi olmaz.
+#
+# ONEMLI - ONCEDEN "KURULAMIYOR" DEDIM, YANLISTI. Denedigim kombinasyon
+# "-hwaccel d3d11va -hwaccel_output_format amf" idi ve d3d11va cozucusu amf
+# yuzeyi uretemedigi icin cokuyordu. Dogrusu cozucunun de amf olmasi.
+#
+# OLCULDU (RX 9070 XT): HIZ KAZANCI YOK.
+#   4K olceklemesiz : mevcut 10.4 sn | tam GPU 10.6 sn
+#   1080p'ye olcek  : mevcut  4.0 sn | tam GPU  4.1 sn
+#   AV1 kaynak      : mevcut  2.7 sn | tam GPU  3.2 sn (mevcut daha hizli)
+# Yine de secenek olarak duruyor: kullanicinin amaci hiz degil, isin tamamen
+# GPU'da kalmasi (CPU'yu bosta birakmak).
+#
+# vpp_amf'in VARSAYILANI bilinear ve kalite kaybettiriyor; olculdu, 4K->1080p
+# kucultmede VMAF bilinear 85.4 iken bicubic 88.6 (lanczos 87.7). Bu yuzden
+# bicubic SABITLENIYOR.
+AMF_TAMGPU_SCALE = "bicubic"
+
+# AV1 kaynaklarda AMF hattı ek donanim karesi istiyor (ffmpeg AMF wiki).
+AMF_EXTRA_HW_FRAMES = "10"
+
+# Tam GPU hattinda kare AMF yuzeyinde kalir; bu filtrelerin AMF karsiligi yok
+# ve zinciri kirar. Istenirse kullaniciya soylenip ATLANIR.
+AMF_TAMGPU_DESTEKLENMEYEN = ("renk filtresi", "taraklanma giderme", "altyazı gömme")
 
 
 def amf_qp_tavani(codec):
@@ -571,6 +601,39 @@ def build_filters(cfg, probes):
     cuda_frames = probes.get("cuda_frames", False)
     vf_filters = []
 
+    # ---------- TAM GPU (AMF) HATTI ----------
+    # Kare AMF yuzeyinde kalir. Yalnizca vpp_amf calisabilir; renk/taraklanma/
+    # altyazi filtrelerinin AMF karsiligi yok ve zinciri kirarlar.
+    if cfg.get("tam_gpu"):
+        if cfg["scale"] != "Orijinal":
+            w = SCALE_MAP.get(cfg["scale"])
+            if w is None:
+                notes.append(f"⚠️ Bilinmeyen çözünürlük: {cfg['scale']}, Orijinal kullanılıyor.")
+            else:
+                # vpp_amf ifade kabul etmiyor; uzun kenari kaynagin oranina
+                # gore hesaplayip iki boyutu da acikca veriyoruz.
+                kw, kh = cfg.get("cikti_boyutu") or (0, 0)
+                if kw and kh:
+                    hedef = (w, max(2, round(w * kh / kw))) if kw >= kh else \
+                            (max(2, round(w * kw / kh)), w)
+                else:
+                    hedef = (w, round(w * 9 / 16))
+                vf_filters.append(
+                    f"vpp_amf=w={hedef[0]}:h={hedef[1]}:scale_type={AMF_TAMGPU_SCALE}")
+        atlanan = []
+        if color_filter_of(cfg):
+            atlanan.append("renk filtresi")
+        if cfg["use_bwdif"]:
+            atlanan.append("taraklanma giderme")
+        if cfg["sub_file"]:
+            atlanan.append("altyazı gömme")
+        if atlanan:
+            notes.append("⚠️ TAM GPU hattında " + ", ".join(atlanan) +
+                         " ATLANDI: bunların AMF karşılığı yok ve kopyasız "
+                         "zinciri kırarlar. Gerekiyorsa kod çözücüyü "
+                         "'Otomatik' yapın.")
+        return vf_filters, notes
+
     if cfg["use_bwdif"]:
         vf_filters.append("yadif_cuda" if cuda_frames else "bwdif")
 
@@ -708,7 +771,13 @@ def build_command(cfg, probes):
     hwaccel = cfg.get("hwaccel", "")
     if hwaccel:
         cmd.extend(["-hwaccel", hwaccel])
-    if cuda_frames:
+    if cfg.get("tam_gpu"):
+        # Cozulen kare AMF yuzeyi olarak kalir -> kopyasiz zincir.
+        cmd.extend(["-hwaccel_output_format", "amf"])
+        # AV1 kaynak ek donanim karesi istiyor (ffmpeg AMF wiki); digerlerinde
+        # zararsiz oldugu icin kosulsuz veriliyor.
+        cmd.extend(["-extra_hw_frames", AMF_EXTRA_HW_FRAMES])
+    elif cuda_frames:
         cmd.extend(["-hwaccel_output_format", "cuda"])
     cmd.extend(trim_args(cfg))
     cmd.extend(["-i", cfg["input_file"]])
@@ -816,7 +885,16 @@ def build_command(cfg, probes):
         # "Supported pixel formats" listesi p010le yaziyor ama YANLIS; bu
         # yalnizca calistirarak ogrenilebiliyor.
         amf_10bit = ten_bit and codec_v != "h264_amf"
-        cmd.extend(["-pix_fmt", "p010le" if amf_10bit else "nv12"])
+        if cfg.get("tam_gpu"):
+            # Kare AMF yuzeyinde; -pix_fmt vermek zinciri sistem bellegine
+            # dusurup kopyasizligi bozar. Bit derinligi kaynaktan gelir.
+            notes.append("⚡ TAM GPU hattı: çözme, ölçekleme ve kodlama GPU'da, "
+                         "sistem belleğine kopya yok.")
+            if ten_bit:
+                notes.append("ℹ️ TAM GPU hattında bit derinliği kaynaktan gelir; "
+                             "'10-bit kodla' şalteri uygulanmadı.")
+        else:
+            cmd.extend(["-pix_fmt", "p010le" if amf_10bit else "nv12"])
         notes.append("🔴 AMD (AMF) kodlayıcısı kullanılıyor.")
         if ten_bit and codec_v == "h264_amf":
             notes.append("ℹ️ AMD H.264 kodlayıcısı 10-bit desteklemiyor; "
@@ -3181,6 +3259,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             ffprobe yalnizca bu dal icin calisir, NVIDIA makinesinde degil.
             """
             tercih = COZUCU_SECENEKLERI.get(oku("cozucu", ""), "oto")
+            if tercih == "tamgpu":
+                return "amf"
             if tercih == "donanim":
                 return "d3d11va"
             if tercih == "yazilim":
@@ -3190,6 +3270,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         if codec_v in AMF_CODECS:
             cfg["hwaccel"] = amd_cozucu()
+            cfg["tam_gpu"] = cfg["hwaccel"] == "amf"
         elif codec_v.endswith("_nvenc"):
             cfg["hwaccel"] = "cuda"
         elif self.donanim.get(NVIDIA):
