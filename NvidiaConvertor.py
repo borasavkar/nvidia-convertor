@@ -378,6 +378,10 @@ AMF_CODECS = tuple(AMF_SEKME_ADI)
 # YOK; olmayanina vermek "not used for any stream" uyarisi uretir.
 AMF_QP_B_KODEKLERI = ("av1_amf", "h264_amf")
 
+# Ust uste kac B-kare. AMF tavani 3 ve olculen en iyi deger de 3
+# (bkz. build_command'daki olcum notu). hevc_amf B-kare SUNMUYOR.
+AMF_B_KARE = "3"
+
 # QP olcegi kodege gore DEGISIR ve bu sessizce yanlis calisan bir arayuz uretir:
 # av1_amf 0-255, digerleri 0-51. Kaydiriciyi hepsinde 0-51 tutunca AV1'de en
 # yuksek deger bile kayipsiza yakin kaliyordu; olculdu, qp16 ile qp51 arasinda
@@ -1109,6 +1113,16 @@ def build_command(cfg, probes):
             # B kareleri ayri bir QP alir; verilmezse varsayilan degeri I/P ile
             # uyusmuyor. hevc_amf'te bu secenek YOK, oraya verilmez.
             cmd.extend(["-qp_b", cq_val])
+            # B-KARE SAYISI: olculen EN BUYUK kazanc bu (gercek icerik, 20 sn,
+            # 640x480 kayipsiz referans, ESIT BOYUTTA karsilastirma):
+            #     h264_amf  bf=3 -> 390 KB / VMAF 82.96
+            #               temel ayni boyutta (QP33) 392 KB / 78.30   +4.7 puan
+            #     av1_amf   bf=3 -> 347 KB / VMAF 84.12
+            #               temel 344 KB / 82.53                       +1.5 puan
+            # bf=2 ikisinde de daha kotu (h264'te VMAF 82.13). Bedeli hiz:
+            # olculdu, ayni is 2.5 sn yerine 3.0 sn (~%20 yavas).
+            # hevc_amf'te bu secenek YOK (kodlayici B-kare sunmuyor).
+            cmd.extend(["-bf", AMF_B_KARE])
         # AMF -level'i yalnizca bitstream'e yazar, bitrate'i KISITLAMAZ
         # (olculdu: level 153 ile 186 bayt bayt ayni cikti). NVENC'teki
         # tavan kusuru burada YOK, o yuzden -level eklenmiyor.
@@ -1123,9 +1137,9 @@ def build_command(cfg, probes):
             # dusurup kopyasizligi bozar. Bit derinligi kaynaktan gelir.
             notes.append("⚡ TAM GPU hattı: çözme, ölçekleme ve kodlama GPU'da, "
                          "sistem belleğine kopya yok.")
-            if ten_bit:
-                notes.append("ℹ️ TAM GPU hattında bit derinliği kaynaktan gelir; "
-                             "'10-bit kodla' şalteri uygulanmadı.")
+            # (10-bit bu hatta -pix_fmt ile DEGIL, vpp_amf=format=p010 ile
+            #  aliniyor; bkz. build_filters. Cikti gercekten 10-bit oluyor,
+            #  olculdu: yuv420p10le.)
         else:
             cmd.extend(["-pix_fmt", "p010le" if amf_10bit else "nv12"])
         notes.append("🔴 AMD (AMF) kodlayıcısı kullanılıyor.")
