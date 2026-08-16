@@ -259,13 +259,13 @@ CQ_RANGES = {
     },
 }
 
-# Varsayilan artik AYRI BIR TABLODA TUTULMUYOR: onerilen araligin ALT SINIRI
-# (= en yuksek kalite ucu) dogrudan CQ_RANGES'ten okunur (bkz. get_cq_default).
+# Varsayilan artik AYRI BIR TABLODA TUTULMUYOR: onerilen araligin UST SINIRI
+# dogrudan CQ_RANGES'ten okunur (bkz. get_cq_default).
 #
-# Neden alt sinir: sekme acildiginda kullanici onerilen bandin EN IYI kalite
-# noktasinda baslasin, oradan istedigi kadar assagi indirsin. Ortadan baslamak
-# arsiv icin dusuk kaliyordu - gercek 4K bir kaynakta ortadaki deger VMAF 80.7
-# uretti, hedef band 90-96 iken.
+# Neden ust sinir: bu bandin ust ucu OLCULEN VMAF ~90 noktasidir, yani
+# "gorunur kayip baslamadan onceki en kucuk dosya". Once alt uc (VMAF ~96)
+# kullaniliyordu; arsiv icin dogruydu ama dosyalar gereksiz buyuyordu.
+# Bandin disina cikilmiyor: alt uc de ust uc de olculmus degerler.
 #
 # Neden ayri tablo yok: iki tablonun ayrisması bu projede zaten bir kez kusur
 # uretti (av1_nvenc'te "1080p" anahtari eksikti, "default" devreye girip
@@ -666,10 +666,19 @@ def komut_metni(cmd):
 
 def get_cq_default(codec, scale, kaynak_boyut=None):
     """
-    Sekme acildiginda kullanilacak CQ/QP: onerilen araligin ALT SINIRI, yani
-    bandin EN YUKSEK KALITE ucu. Kullanici oradan istedigi kadar asagi iner.
+    Sekme acildiginda kullanilacak CQ/QP: onerilen araligin UST SINIRI, yani
+    "camurlasma riski" esiginin hemen altindaki en tutumlu deger.
+
+    KULLANICI TERCIHI (2026-08-16): eskiden bandin ALT ucu (en yuksek kalite)
+    kullaniliyordu. Amac arsiv kalitesiydi ama pratikte dosyalar gereksiz
+    buyuyordu - olculdu, 32 kbps'lik gercek bir kaynakta bile cikti kaynaktan
+    buyuk cikabiliyor. Ust sinir hala OLCULEN bandin icinde: VMAF ~90, yani
+    "gorunur kayip baslamadan onceki en kucuk dosya".
+
+    Bandin kendisi kaynagin cozunurlugune gore secilir (bkz. get_cq_range),
+    yani bu deger de kaynaga gore degisir.
     """
-    return get_cq_range(codec, scale, kaynak_boyut)[0]
+    return get_cq_range(codec, scale, kaynak_boyut)[1]
 
 
 def parse_time(metin):
@@ -2166,8 +2175,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # deger sectiyse ASLA dokunma. Bu olmadan sekme 1080p varsayilaniyla
         # aciliyor ve 4K bir dosya yuklenince kirmizi uyarida oylece
         # bekliyordu -- kullanicinin fark etmesi gerekiyordu.
-        if tab_vars.get("cq_auto") is not None and v == tab_vars["cq_auto"] and v != min_cq:
-            v = min_cq
+        varsayilan = get_cq_default(codec, current_scale, kaynak)
+        if (tab_vars.get("cq_auto") is not None and v == tab_vars["cq_auto"]
+                and v != varsayilan):
+            v = varsayilan
             tab_vars["cq_auto"] = v
             tab_vars["cq"].set(v)
             slider_cq.set(v)
@@ -3622,6 +3633,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             # cevrilir; bu bayrak islemin tekrarlanmasini engeller (kullanici
             # bilerek 128k'ya donmusse ikinci kez ezmeyelim).
             "ses_varsayilani_kopyala_gocu": True,
+            # QP varsayilani bandin ALT ucundan UST ucuna gecti; kaydedilmis
+            # eski degerlerin yeni davranisi bir kez devralmasi icin bayrak.
+            "cq_ust_sinir_gocu": True,
             "aktif_sekme": self.tabview.get(),
             "son_video_klasoru": self.last_video_dir,
             "son_altyazi_klasoru": self.last_sub_dir,
@@ -3723,6 +3737,23 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                          "(eski varsayılan 128k idi; kaynaktan yüksek bitrate "
                          "kaliteyi artırmaz, dosyayı büyütür). İstediğiniz "
                          "sekmede geri değiştirebilirsiniz.")
+
+        # --- QP VARSAYILANI GOCU (bir kez) ---
+        # Varsayilan artik onerilen bandin UST ucu (en tutumlu, olculen VMAF
+        # ~90 noktasi). Kaydedilmis eski degerler bunu ezerdi. Restore edilen
+        # degeri "otomatik konmus" sayarak isaretliyoruz: boylece kaynak
+        # yuklenince deger yeni varsayilana oturur. Kullanici bundan SONRA
+        # elle bir deger secerse bir daha dokunulmaz (bkz. _update_cq_display).
+        if not data.get("cq_ust_sinir_gocu"):
+            for tab_vars in self.tabs.values():
+                if hasattr(tab_vars.get("cq"), "get"):
+                    try:
+                        tab_vars["cq_auto"] = int(float(tab_vars["cq"].get()))
+                    except Exception:
+                        pass
+            self.log("ℹ️ QP varsayılanı, önerilen bandın en tutumlu ucuna "
+                     "alındı (kaynağın çözünürlüğüne göre). Kadranı elle "
+                     "değiştirirseniz seçiminiz korunur.")
 
         aktif = data.get("aktif_sekme")
         if aktif in self.tabs:

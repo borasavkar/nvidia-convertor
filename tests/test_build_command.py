@@ -379,10 +379,10 @@ def test_av1_amf_qp_olcegi_255():
 
 @pytest.mark.parametrize("codec", ["hevc_amf", "h264_amf", "av1_amf"])
 @pytest.mark.parametrize("scale", ["240p", "360p", "480p", "720p", "1080p", "1440p", "4K"])
-def test_amd_varsayilan_qp_araligin_ALT_SINIRI(codec, scale):
-    """Sekme, onerilen bandin en yuksek kalite ucunda acilir."""
+def test_amd_varsayilan_qp_araligin_UST_SINIRI(codec, scale):
+    """Sekme, onerilen bandin en tutumlu ucunda acilir (bkz. get_cq_default)."""
     lo, hi = nv.get_cq_range(codec, scale)
-    assert nv.get_cq_default(codec, scale) == lo
+    assert nv.get_cq_default(codec, scale) == hi
 
 
 @pytest.mark.parametrize("codec", ["hevc_amf", "h264_amf", "av1_amf"])
@@ -630,7 +630,7 @@ def test_orijinal_secilince_band_KAYNAGIN_cozunurlugunden_gelir():
     """
     assert nv.get_cq_range("av1_amf", "Orijinal") == (144, 160)          # kaynak bilinmiyor
     assert nv.get_cq_range("av1_amf", "Orijinal", (3840, 2160)) == (70, 104)
-    assert nv.get_cq_default("av1_amf", "Orijinal", (3840, 2160)) == 70
+    assert nv.get_cq_default("av1_amf", "Orijinal", (3840, 2160)) == 104
     # Kucuk kaynak da dogru bandi almali (kullanicinin 320x240 dosyasi).
     assert nv.get_cq_range("av1_amf", "Orijinal", (320, 240)) == (115, 136)
     # Acikca bir olcek secildiyse kaynak boyutu KARISMAZ.
@@ -886,14 +886,15 @@ def test_temporal_aq_kapatilabilir():
 # ---------------------------------------------------------------- CQ tablolari
 @pytest.mark.parametrize("codec", ["av1_nvenc", "hevc_nvenc", "h264_nvenc", "libvpx-vp9"])
 @pytest.mark.parametrize("scale", ["240p", "360p", "480p", "720p", "1080p", "1440p", "4K"])
-def test_varsayilan_cq_onerilen_araligin_ALT_SINIRI(codec, scale):
+def test_varsayilan_cq_onerilen_araligin_UST_SINIRI(codec, scale):
     """
-    Sekme acildiginda kullanici onerilen bandin EN IYI kalite noktasinda
-    baslar. Ortadan baslamak arsiv icin dusuk kaliyordu: gercek 4K bir
-    kaynakta ortadaki deger VMAF 80.7 uretti (hedef band 90-96).
+    Sekme, onerilen bandin UST ucunda acilir: olculen VMAF ~90 noktasi, yani
+    "gorunur kayip baslamadan onceki en kucuk dosya". Alt uc (VMAF ~96) arsiv
+    icin dogruydu ama dosyalari gereksiz buyutuyordu; band DISINA cikilmiyor,
+    iki uc de olculmus degerler.
     """
     lo, hi = nv.get_cq_range(codec, scale)
-    assert nv.get_cq_default(codec, scale) == lo
+    assert nv.get_cq_default(codec, scale) == hi
     assert lo < hi                       # aralik gercekten bir aralik olsun
 
 
