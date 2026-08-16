@@ -21,7 +21,7 @@ from collections import deque
 # Zaman damgasi exe'nin kendi dosya tarihinden okunur; boylece surum
 # numarasini artirmayi unutsam bile hangi derlemenin calistigi kesin
 # anlasilir - bu, "yeni exe'yi mi calistiriyorum?" sorusunu bitirir.
-SURUM = "1.4.0"
+SURUM = "1.5.0"
 
 
 def surum_metni():
@@ -379,6 +379,11 @@ SES_KOPYALA = "Kopyala (yeniden kodlama yok)"
 SES_BITRATE_ADIMLARI = (64, 96, 128, 192, 256, 320)
 
 # --- YERLESIM ---
+# Ana pencere genisligi. 900 px'ti; kartlar tek bir acilir kutu icin bile
+# sutunun tamamina yayildigindan ekranda gereksiz yer kapliyordu. Kutular
+# artik sabit genislikte (KUTU_GENISLIK) oldugu icin sutunlarin bu kadar
+# genis olmasina gerek yok.
+PENCERE_GENISLIK = 760
 # Acilir kutularin sabit genisligi. OLCULDU (tkfont.measure ile, tum
 # sekmelerdeki tum kutularin en uzun degeri taranarak): en genis metin
 # "Kopyala (yeniden kodlama yok)" ve acilir ok payiyla 266 px istiyor;
@@ -1553,13 +1558,13 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.title(f"Nvidia Cuda Video Convertor - Ultimate Edition   {surum_metni()}")
         # Konum da belirtilir: Tk'nin varsayilan yerlesimi pencereyi ekranin
         # ortasina koyup altini gorev cubugunun altinda birakiyordu.
-        _gen, _yuk = 900, self._uygun_yukseklik(1300)
+        _gen, _yuk = PENCERE_GENISLIK, self._uygun_yukseklik(1300)
         self.geometry("%dx%d+%d+%d" % (
             _gen, _yuk, max(0, (self.winfo_screenwidth() - _gen) // 2), 20))
         # Sabit boyut, kucuk ekranlarda pencerenin altini kesiyordu. Log alani
         # expand=True oldugu icin kucultmeyi o sogurur.
         self.resizable(True, True)
-        self.minsize(880, 560)
+        self.minsize(PENCERE_GENISLIK - 40, 560)
 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.current_process = None
@@ -2054,7 +2059,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
     def _create_audio_card(self, parent, tab_vars, pady):
         card = self.create_card(parent, "🎵 Ses Kalitesi")
-        card.pack(anchor="w", pady=pady)
+        card.pack(fill="x", pady=pady)
         ReadOnlyComboBox(card, variable=tab_vars["audio_bitrate"],
                          values=self.AUDIO_VALUES).pack(anchor="w", padx=15, pady=(0, 15))
         return card
@@ -2062,7 +2067,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     def _create_nvenc_card(self, parent, tab_vars, title, on_cq_change):
         """Preset + CQ slider karti. (lbl_title, lbl_status, slider) dondurur."""
         card = self.create_card(parent, title)
-        card.pack(anchor="w", pady=10)
+        card.pack(fill="x", pady=10)
         ctk.CTkLabel(card, text="NVENC Preset:").pack(anchor="w", padx=15)
         ReadOnlyComboBox(card, variable=tab_vars["preset"],
                          values=self.PRESET_VALUES).pack(anchor="w", padx=15, pady=(0, 15))
@@ -2082,9 +2087,14 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         ctk.CTkCheckBox(parent, text=text, variable=variable).pack(anchor="w", padx=15, pady=(6, 0))
         # height verilmezse CTkLabel tek satir icin bile 28 px yer kapliyor;
         # 6 salterde bu ~70 px gereksiz kaydirma demek.
+        # wraplength SUTUN GENISLIGINI BELIRLIYOR: 430 idi ve kartlarin dogal
+        # genisligini o kadar buyuk tutuyordu ki pencere 860 px'in altina
+        # inemiyordu (olculdu). 250'ye indirilince pencere 760'a sigiyor;
+        # karsiliginda uzun aciklamalar iki satira dusuyor, bu yuzden height
+        # de 16'dan 30'a cikarildi - yoksa ikinci satir KESILIR.
         ctk.CTkLabel(parent, text=aciklama, font=("Arial", 10, "italic"),
                      text_color="#8A8A8A", justify="left", anchor="w",
-                     height=16, wraplength=430).pack(anchor="w", padx=(40, 12),
+                     height=30, wraplength=250).pack(anchor="w", padx=(40, 12),
                                                      pady=(0, 10 if son else 1))
 
     # Salter kartinda kac sutun kullanilacagi. 3 sutunda aciklamalar tek satira
@@ -2375,13 +2385,13 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             else: tab_vars["vp9_tiles"].set("1 (Düşük Çöz. için)")
 
         card_format = self.create_card(col_left, "📦 Format & Ses")
-        card_format.pack(anchor="w", pady=(0, 10))
+        card_format.pack(fill="x", pady=(0, 10))
         ReadOnlyComboBox(card_format, variable=tab_vars["container"], values=["webm", "mkv"]).pack(anchor="w", padx=15, pady=(0, 5))
         ctk.CTkLabel(card_format, text="* VP9 için WebM standarttır (Audio: Opus)", font=("Arial", 10, "italic"), text_color="gray").pack(anchor="w", padx=15, pady=(0, 5))
         ReadOnlyComboBox(card_format, variable=tab_vars["audio_bitrate"], values=self.VP9_AUDIO_VALUES).pack(anchor="w", padx=15, pady=(5, 15))
 
         card_vp9 = self.create_card(col_left, "🧠 VP9 İşlemci Motoru (CPU)")
-        card_vp9.pack(anchor="w", pady=10)
+        card_vp9.pack(fill="x", pady=10)
 
         ctk.CTkLabel(card_vp9, text="-quality (Genel Kalite):").pack(anchor="w", padx=15)
         ReadOnlyComboBox(card_vp9, variable=tab_vars["vp9_quality"], values=["good (Önerilen)", "best (Aşırı Yavaş)", "realtime"]).pack(anchor="w", padx=15, pady=(0, 10))
@@ -2402,7 +2412,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         col_right.grid(row=0, column=1, sticky="nsew", padx=5)
 
         card_res = self.create_card(col_right, "📐 Çözünürlük & İş Parçacığı")
-        card_res.pack(anchor="w", pady=(0, 10))
+        card_res.pack(fill="x", pady=(0, 10))
 
         cb_scale = ReadOnlyComboBox(card_res, variable=tab_vars["scale"], values=["Orijinal", "240p", "360p", "480p", "720p", "1080p", "1440p", "4K"], command=on_vp9_scale_change)
         cb_scale.pack(anchor="w", padx=15, pady=(10, 15))
@@ -2457,7 +2467,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         if is_av1:
             card_format = self.create_card(col_left, "📦 Format Konteyner")
-            card_format.pack(anchor="w", pady=(0, 10))
+            card_format.pack(fill="x", pady=(0, 10))
             ReadOnlyComboBox(card_format, variable=tab_vars["container"], values=["mkv", "mp4"]).pack(anchor="w", padx=15, pady=(0, 5))
             ctk.CTkLabel(card_format, text="* MKV: libopus | MP4: aac", font=("Arial", 10, "italic"), text_color="gray").pack(anchor="w", padx=15, pady=(0, 10))
 
@@ -2469,7 +2479,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         col_right.grid(row=0, column=1, sticky="nsew", padx=5)
 
         card_res = self.create_card(col_right, "📐 Çözünürlük")
-        card_res.pack(anchor="w", pady=(0, 10))
+        card_res.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(card_res, text="Akıllı Ölçeklendirme (Lanczos):").pack(anchor="w", padx=15)
 
         cb_scale = ReadOnlyComboBox(card_res, variable=tab_vars["scale"], values=self.SCALE_VALUES, command=on_scale_change)
@@ -2526,14 +2536,14 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                                     lbl_cq_status, slider_cq, "QP (Kalite)")
 
         card_format = self.create_card(col_left, "📦 Format Konteyner")
-        card_format.pack(anchor="w", pady=(0, 10))
+        card_format.pack(fill="x", pady=(0, 10))
         ReadOnlyComboBox(card_format, variable=tab_vars["container"],
                          values=["mkv", "mp4"]).pack(anchor="w", padx=15, pady=(0, 10))
 
         self._create_audio_card(col_left, tab_vars, pady=(0, 10))
 
         card_amf = self.create_card(col_left, "🔴 AMD Motoru (AMF)")
-        card_amf.pack(anchor="w", pady=10)
+        card_amf.pack(fill="x", pady=10)
         ctk.CTkLabel(card_amf, text="Kalite Ön Ayarı:").pack(anchor="w", padx=15)
         ReadOnlyComboBox(card_amf, variable=tab_vars["amf_quality"],
                          values=AMF_QUALITY_VALUES).pack(anchor="w", padx=15, pady=(0, 10))
@@ -2568,7 +2578,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         col_right.grid(row=0, column=1, sticky="nsew", padx=5)
 
         card_res = self.create_card(col_right, "📐 Çözünürlük")
-        card_res.pack(anchor="w", pady=(0, 10))
+        card_res.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(card_res, text="Akıllı Ölçeklendirme (Lanczos):").pack(anchor="w", padx=15)
 
         def on_scale_change(secim):
@@ -2707,7 +2717,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                                     lbl_cq_status, slider_cq, "QP (Kalite)")
 
         card_codec = self.create_card(col_left, "🔴 Donanım Motoru (AMF, kopyasız)")
-        card_codec.pack(anchor="w", pady=(0, 10))
+        card_codec.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(card_codec, text="Kodlayıcı:").pack(anchor="w", padx=15)
         ReadOnlyComboBox(card_codec, variable=tab_vars["selected_codec"],
                          values=[f"{ad.split(' ')[0]} ({kod})"
@@ -2721,7 +2731,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self._create_audio_card(col_left, tab_vars, pady=10)
 
         card_amf = self.create_card(col_left, "⚙️ AMF Ön Ayarları")
-        card_amf.pack(anchor="w", pady=10)
+        card_amf.pack(fill="x", pady=10)
         ctk.CTkLabel(card_amf, text="Kalite Ön Ayarı:").pack(anchor="w", padx=15)
         ReadOnlyComboBox(card_amf, variable=tab_vars["amf_quality"],
                          values=AMF_QUALITY_VALUES).pack(anchor="w", padx=15, pady=(0, 10))
@@ -2741,7 +2751,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         col_right.grid(row=0, column=1, sticky="nsew", padx=5)
 
         card_res = self.create_card(col_right, "📐 Çözünürlük (GPU'da)")
-        card_res.pack(anchor="w", pady=(0, 10))
+        card_res.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(card_res, text="Ölçekleme:").pack(anchor="w", padx=15)
         ReadOnlyComboBox(card_res, variable=tab_vars["scale"], values=self.SCALE_VALUES,
                          command=lambda secim: self._auto_set_cq(
@@ -2875,7 +2885,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             self._auto_set_cq(codec, tab_vars["scale"].get(), tab_vars, slider_cq, lbl_cq_title, lbl_cq_status)
 
         card_codec = self.create_card(col_left, "🚀 Donanım Motoru (VRAM)")
-        card_codec.pack(anchor="w", pady=(0, 10))
+        card_codec.pack(fill="x", pady=(0, 10))
         cb_codec = ReadOnlyComboBox(card_codec, variable=tab_vars["selected_codec"], values=["AV1 (av1_nvenc)", "H.265 (hevc_nvenc)", "H.264 (h264_nvenc)"], command=on_cuda_codec_change)
         cb_codec.pack(anchor="w", padx=15, pady=(0, 10))
         ctk.CTkLabel(card_codec, text="Konteyner:").pack(anchor="w", padx=15)
@@ -2889,7 +2899,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         col_right.grid(row=0, column=1, sticky="nsew", padx=5)
 
         card_res = self.create_card(col_right, "📐 CUDA Çözünürlük (scale_cuda)")
-        card_res.pack(anchor="w", pady=(0, 10))
+        card_res.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(card_res, text="Donanımsal GPU Ölçekleme:").pack(anchor="w", padx=15)
 
         cb_scale = ReadOnlyComboBox(card_res, variable=tab_vars["scale"], values=self.SCALE_VALUES, command=on_cuda_scale_change)
@@ -2947,7 +2957,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         col_left.grid(row=0, column=0, sticky="nsew", padx=5)
 
         card_bilgi = self.create_card(col_left, "⚡ Yeniden Kodlama Yok")
-        card_bilgi.pack(anchor="w", pady=(0, 10))
+        card_bilgi.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(
             card_bilgi,
             text="Video ve ses akışları olduğu gibi kopyalanır; kaynağın\n"
@@ -2957,7 +2967,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         ).pack(anchor="w", padx=15, pady=(0, 12))
 
         card_format = self.create_card(col_left, "📦 Çıkış Konteyneri")
-        card_format.pack(anchor="w", pady=(0, 10))
+        card_format.pack(fill="x", pady=(0, 10))
         ReadOnlyComboBox(card_format, variable=tab_vars["container"],
                          values=["mkv", "mp4"]).pack(anchor="w", padx=15, pady=(0, 5))
         ctk.CTkLabel(card_format,
@@ -2968,7 +2978,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                      justify="left", anchor="w").pack(anchor="w", padx=15, pady=(0, 12))
 
         card_kod = self.create_card(col_left, "🔤 Altyazı Karakter Kodlaması")
-        card_kod.pack(anchor="w", pady=(0, 10))
+        card_kod.pack(fill="x", pady=(0, 10))
         ReadOnlyComboBox(card_kod, variable=tab_vars["sub_charenc"],
                          values=list(SUB_CHARENC_SECENEKLERI)).pack(anchor="w", padx=15, pady=(0, 5))
         ctk.CTkLabel(card_kod,
@@ -2982,7 +2992,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         col_right.grid(row=0, column=1, sticky="nsew", padx=5)
 
         card_iz = self.create_card(col_right, "💬 Altyazı İzi")
-        card_iz.pack(anchor="w", pady=(0, 10))
+        card_iz.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(card_iz, text="Dil etiketi:").pack(anchor="w", padx=15)
         ReadOnlyComboBox(card_iz, variable=tab_vars["sub_lang"],
                          values=list(SUB_DIL_SECENEKLERI)).pack(anchor="w", padx=15, pady=(0, 10))
@@ -3891,22 +3901,24 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             if tab_vars.get("is_tamgpu") and hasattr(tab_vars.get("ten_bit"), "set"):
                 tab_vars["ten_bit"].set(False)
 
-        # --- QP VARSAYILANI GOCU (bir kez) ---
-        # Varsayilan artik onerilen bandin UST ucu (en tutumlu, olculen VMAF
-        # ~90 noktasi). Kaydedilmis eski degerler bunu ezerdi. Restore edilen
-        # degeri "otomatik konmus" sayarak isaretliyoruz: boylece kaynak
-        # yuklenince deger yeni varsayilana oturur. Kullanici bundan SONRA
-        # elle bir deger secerse bir daha dokunulmaz (bkz. _update_cq_display).
-        if not data.get("cq_ust_sinir_gocu"):
-            for tab_vars in self.tabs.values():
-                if hasattr(tab_vars.get("cq"), "get"):
-                    try:
-                        tab_vars["cq_auto"] = int(float(tab_vars["cq"].get()))
-                    except Exception:
-                        pass
-            self.log("ℹ️ QP varsayılanı, önerilen bandın en tutumlu ucuna "
-                     "alındı (kaynağın çözünürlüğüne göre). Kadranı elle "
-                     "değiştirirseniz seçiminiz korunur.")
+        # --- OTOMATIK VARSAYILANLARIN BASLANGIC NOKTASI ---
+        # QP ve ses ayari, kaynak yuklenince otomatik guncellenir; "kullanici
+        # elle degistirdi mi" sorusu cq_auto/ses_auto ile anlasilir.
+        # BUNLAR HER ACILISTA, AYARLAR YUKLENDIKTEN SONRA TOHUMLANMALI.
+        #
+        # KUSURDU: eskiden yalnizca BIR KEZ (bayrakla) tohumlaniyordu. Ilk
+        # otomatik deger kaydedildikten sonra, sonraki aciliste kaydedilen
+        # deger ile tohum uyusmuyordu; uygulama bunu "kullanici elle secti"
+        # sanip bir daha ASLA guncellemiyordu. Sonuc: video eklendiginde ne
+        # QP bandi ne de ses ayari kendini yeniliyordu.
+        for tab_vars in self.tabs.values():
+            if hasattr(tab_vars.get("cq"), "get"):
+                try:
+                    tab_vars["cq_auto"] = int(float(tab_vars["cq"].get()))
+                except Exception:
+                    pass
+            if hasattr(tab_vars.get("audio_bitrate"), "get"):
+                tab_vars["ses_auto"] = tab_vars["audio_bitrate"].get()
 
         aktif = data.get("aktif_sekme")
         if aktif in self.tabs:
