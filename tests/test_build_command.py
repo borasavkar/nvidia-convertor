@@ -443,11 +443,14 @@ def test_amf_kabul_eden_sekmeler_olculen_sinirlara_uyuyor():
     assert nv.amf_kabul_eden_sekmeler(64, 32) == []
 
 
+AMF_SR_DEGERLERI = set(nv.AMF_SR_ALGORITMALARI.values())
+
+
 def tamgpu_cfg(**kw):
     """TAM GPU sekmesinin urettigi is tanimi."""
     base = amd_cfg(tam_gpu=True, hwaccel="amf", tab_name=nv.TAMGPU_SEKME,
                    scale="Orijinal", cikti_boyutu=(1920, 1080), ten_bit=False,
-                   amf_sr=False, amf_sr_algo="4", amf_frc=False)
+                   amf_sr=False, amf_sr_algo=nv.AMF_SR_VARSAYILAN_ALGO, amf_frc=False)
     base.update(kw)
     return base
 
@@ -490,7 +493,7 @@ def test_tamgpu_HQ_buyutme_YALNIZ_calisir():
     """
     vf, notes = nv.build_filters(
         tamgpu_cfg(scale="720p", amf_sr=True, ten_bit=True, amf_frc=True), probes())
-    assert vf == ["sr_amf=w=1280:h=720:algorithm=4"]
+    assert vf == ["sr_amf=w=1280:h=720:algorithm=2"]
     assert not any("vpp_amf" in f or "frc_amf" in f for f in vf)
     assert any("HQ büyütme" in n and "ATLANDI" in n for n in notes)
 
@@ -506,6 +509,18 @@ def test_tamgpu_yapamadiklarini_SOYLUYOR():
                                  probes())
     assert not any("subtitles" in f or "bwdif" in f for f in vf)
     assert any("altyazı gömme" in n for n in notes)
+
+
+def test_bozuk_SR11_algoritmasi_SUNULMUYOR():
+    """
+    OLCULDU: sr_amf algorithm=4 (SR 1.1) bu surucude SIMSIYAH kare uretiyor -
+    komut basariyla bitiyor, cozunurluk ve kare sayisi dogru, ama goruntu bos
+    (YAVG 0.0, PSNR 9.6 dB). Digerleri dogru calisiyor. Listeye geri
+    eklenirse kullanici siyah video alir.
+    """
+    assert "4" not in AMF_SR_DEGERLERI
+    assert nv.AMF_SR_VARSAYILAN_ALGO == "2" and "2" in AMF_SR_DEGERLERI
+    assert not any("1.1" in ad for ad in nv.AMF_SR_ALGORITMALARI)
 
 
 def test_tamgpu_kendi_sekmesinde_cozucu_listesinde_DEGIL():
