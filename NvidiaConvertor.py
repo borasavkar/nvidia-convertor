@@ -21,7 +21,7 @@ from collections import deque
 # Zaman damgasi exe'nin kendi dosya tarihinden okunur; boylece surum
 # numarasini artirmayi unutsam bile hangi derlemenin calistigi kesin
 # anlasilir - bu, "yeni exe'yi mi calistiriyorum?" sorusunu bitirir.
-SURUM = "1.5.0"
+SURUM = "1.6.0"
 
 
 def surum_metni():
@@ -1241,6 +1241,16 @@ def build_command(cfg, probes):
         cmd.extend(["-c:a", codec_a, "-b:a", a_bitrate])
         if ses_notu:
             notes.append(ses_notu)
+
+    # RENK ETIKETI - IKINCI KATMAN. Asil is setparams filtresinde yapiliyor
+    # (bkz. build_filters). Filtre zinciri herhangi bir yolda atlanirsa cikti
+    # SAHTE HDR damgasi aliyor ve goruntu kirmiziya caliyordu; bu bayraklar o
+    # ihtimale karsi emniyet kemeri. Tek baslarina YETMEZLER - olculdu,
+    # yalnizca primaries'i dolduruyorlar, transfer/colorspace "unknown"
+    # kaliyor - ama filtreyle birlikte koruma iki bacakli oluyor.
+    if probes.get("renk_etiketsiz"):
+        cmd.extend(["-color_primaries", "bt709", "-color_trc", "bt709",
+                    "-colorspace", "bt709"])
 
     for anahtar, deger in (("title", cfg["meta_title"]), ("artist", cfg["meta_artist"]),
                            ("album", cfg["meta_album"]), ("grouping", cfg["meta_grouping"])):
@@ -3598,9 +3608,19 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             degerler = [s.strip().lower() for s in result.stdout.splitlines() if s.strip()]
             if not degerler:
                 return False
-            # ffprobe tanimsiz alanlar icin "unknown"/"N/A" dondurur
-            return any(d not in ("unknown", "n/a", "unspecified", "reserved")
-                       for d in degerler)
+            bilinmeyen = ("unknown", "n/a", "unspecified", "reserved", "")
+            # GERCEKTEN HDR olan kaynaga DOKUNULMAZ: bt709 damgasi basmak
+            # onlarin rengini bozardi.
+            if any(d in ("bt2020", "bt2020nc", "bt2020c", "smpte2084", "arib-std-b67")
+                   for d in degerler):
+                return True
+            # SDR tarafinda TEK BIR alanin bile eksik olmasi yeterli sebep:
+            # olculdu, primaries/transfer bos olan bir kaynak 10-bit'e
+            # cevrilince cikti "bt2020 + smpte2084" (sahte HDR) damgasi aliyor
+            # ve goruntu kirmiziya caliyor. Eskiden "herhangi biri doluysa
+            # etiketli say" deniyordu; yalnizca colorspace'i dolu olan
+            # dosyalar bu yuzden korumasiz kaliyordu.
+            return not any(d in bilinmeyen for d in degerler)
         except Exception:
             # Okunamadiysa etiket VAR say: gereksiz yere damgalamak, dogru
             # etiketli bir HDR kaynagi BT.709'a cevirmekten daha risklidir.
