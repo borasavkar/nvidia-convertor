@@ -21,7 +21,7 @@ from collections import deque
 # Zaman damgasi exe'nin kendi dosya tarihinden okunur; boylece surum
 # numarasini artirmayi unutsam bile hangi derlemenin calistigi kesin
 # anlasilir - bu, "yeni exe'yi mi calistiriyorum?" sorusunu bitirir.
-SURUM = "1.2.0"
+SURUM = "1.3.0"
 
 
 def surum_metni():
@@ -401,7 +401,18 @@ AMF_QP_B_KODEKLERI = ("av1_amf", "h264_amf")
 
 # Ust uste kac B-kare. AMF tavani 3 ve olculen en iyi deger de 3
 # (bkz. build_command'daki olcum notu). hevc_amf B-kare SUNMUYOR.
+#
+# HIZ BEDELI KODEGE GORE COK FARKLI - OLCULDU (4K kaynak -> 720p, gercek is
+# yuku; kalite olcumu ayri, 640x480 gercek icerikte sabit QP):
+#     av1_amf   bf=0  9.54x  547 KB  VMAF 89.42   video motoru %96
+#               bf=3  4.29x  518 KB  VMAF 90.57   video motoru %45
+#     h264_amf  bf=0 10.70x  480 KB  VMAF 83.00
+#               bf=3  9.68x  390 KB  VMAF 82.96
+# H.264'te bedava sayilir (%10 yavaslama, %19 kucuk dosya) -> HEP ACIK.
+# AV1'de hizin yarisindan fazlasini goturuyor, kazanc ise kucuk (%5 boyut,
+# 1.15 VMAF) -> KULLANICI SECIMI, varsayilan kapali.
 AMF_B_KARE = "3"
+AMF_B_KARE_KAPALI = "0"
 
 # QP olcegi kodege gore DEGISIR ve bu sessizce yanlis calisan bir arayuz uretir:
 # av1_amf 0-255, digerleri 0-51. Kaydiriciyi hepsinde 0-51 tutunca AV1'de en
@@ -1147,7 +1158,10 @@ def build_command(cfg, probes):
             # bf=2 ikisinde de daha kotu (h264'te VMAF 82.13). Bedeli hiz:
             # olculdu, ayni is 2.5 sn yerine 3.0 sn (~%20 yavas).
             # hevc_amf'te bu secenek YOK (kodlayici B-kare sunmuyor).
-            cmd.extend(["-bf", AMF_B_KARE])
+            # H.264'te hep acik, AV1'de kullaniciya birakildi (hiz bedeli
+            # cok agir; bkz. AMF_B_KARE notu).
+            acik = codec_v == "h264_amf" or cfg.get("amf_bf")
+            cmd.extend(["-bf", AMF_B_KARE if acik else AMF_B_KARE_KAPALI])
         # AMF -level'i yalnizca bitstream'e yazar, bitrate'i KISITLAMAZ
         # (olculdu: level 153 ile 186 bayt bayt ayni cikti). NVENC'teki
         # tavan kusuru burada YOK, o yuzden -level eklenmiyor.
@@ -2473,12 +2487,14 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         frame = self.tabview.tab(tab_name)
 
         is_av1 = codec_name == "av1_amf"
+        # AV1'de B-kare kullanici secimi (varsayilan kapali); bkz. AMF_B_KARE.
         tab_vars = self._nvenc_tab_vars("mkv" if is_av1 else "mp4",
                                         get_cq_default(codec_name, "Orijinal"))
         tab_vars["codec"] = codec_name
         # NVENC'e ozel salterler AMF'de yok; kart kurulurken sorulmasin diye
         # degiskenleri birakiyoruz ama komuta girmiyorlar (bkz. build_command).
         tab_vars["amf_quality"] = ctk.StringVar(value="quality")
+        tab_vars["amf_bf"] = ctk.BooleanVar(value=False)
         tab_vars["cozucu"] = ctk.StringVar(value=list(COZUCU_SECENEKLERI)[0])
         tab_vars.update(self._tab_meta(is_pure_cuda=False, is_vp9=False,
                                        accent=("#c0392b", "#922b21", "white")))
@@ -2563,16 +2579,23 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         kafes.pack(fill="x", padx=10, pady=(0, 10))
         for i in range(3):
             kafes.grid_columnconfigure(i, weight=1, uniform="salter")
-        for sira, (metin, degisken, aciklama) in enumerate([
+        salterler = [
             ("Taraklanmayı Gider (bwdif)", tab_vars["bwdif"],
              "Tarak izlerini giderir (CPU'da çalışır)."),
             ("Kaynaktan büyütme yapma", tab_vars["no_upscale"],
              "Büyütme yapmaz, biti boşa harcamaz."),
             ("10-bit kodla (Main 10)", tab_vars["ten_bit"],
              "Bantlanmayı azaltır; kapalıysa uyum artar."),
-        ]):
+        ]
+        if is_av1:
+            # H.264'te B-kare hep acik (bedeli yok), AV1'de kullaniciya
+            # birakildi: olculdu, hizi 9.5x'ten 4.3x'e dusuruyor.
+            salterler.append(
+                ("B-kare (yavaşlatır)", tab_vars["amf_bf"],
+                 "Dosya %5 küçülür ama hız yarıya iner."))
+        for sira, (metin, degisken, aciklama) in enumerate(salterler):
             hucre = ctk.CTkFrame(kafes, fg_color="transparent")
-            hucre.grid(row=0, column=sira, sticky="nsew", padx=4, pady=(4, 2))
+            hucre.grid(row=sira // 3, column=sira % 3, sticky="nsew", padx=4, pady=(4, 2))
             ctk.CTkCheckBox(hucre, text=metin, variable=degisken).pack(anchor="w")
             ctk.CTkLabel(hucre, text=aciklama, font=("Arial", 10, "italic"),
                          text_color="#8A8A8A", justify="left", anchor="w",
@@ -2618,6 +2641,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # TAM GPU'nun bozuk 10-bit'i 25.93 MB idi).
         tab_vars["ten_bit"].set(False)
         tab_vars["amf_sr"] = ctk.BooleanVar(value=False)
+        tab_vars["amf_bf"] = ctk.BooleanVar(value=False)
         tab_vars["amf_sr_algo"] = ctk.StringVar(value=list(AMF_SR_ALGORITMALARI)[0])
         tab_vars["amf_frc"] = ctk.BooleanVar(value=False)
         tab_vars.update(self._tab_meta(is_pure_cuda=False, is_vp9=False,
@@ -2744,6 +2768,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
              "Donanımsal super-resolution. Yalnız çalışır.", on_hq_degisti),
             ("Kare hızını 2 katına çıkar", tab_vars["amf_frc"],
              "Hareket interpolasyonu (30->60). Dosya büyür.", None),
+            ("AV1'de B-kare (yavaşlatır)", tab_vars["amf_bf"],
+             "Dosya %5 küçülür ama hız yarıya iner.", None),
         ]):
             hucre = ctk.CTkFrame(kafes, fg_color="transparent")
             hucre.grid(row=0, column=sira, sticky="nsew", padx=4, pady=(4, 2))
@@ -2756,6 +2782,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                          height=16, wraplength=260).pack(anchor="w", padx=(26, 0), pady=(1, 0))
             if sira == 1:
                 cb_frc = cb
+            elif sira == 2:
+                cb_bf = cb
         lbl_hq_not = ctk.CTkLabel(kart_salter, text="", font=("Arial", 10, "italic"),
                                   text_color="#FFA500", anchor="w")
         lbl_hq_not.pack(anchor="w", padx=15, pady=(0, 8))
@@ -2772,6 +2800,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         def on_kodek_degisti(secim):
             kodek = secim.split("(")[1].split(")")[0]
             tavani_uygula(kodek)
+            # B-kare salteri yalnizca AV1'de anlamli: H.264'te zaten hep acik
+            # (bedeli yok), H.265'te kodlayici B-kare sunmuyor.
+            cb_bf.configure(state="normal" if kodek == "av1_amf" else "disabled")
             tab_vars["container"].set("mkv" if kodek == "av1_amf" else "mp4")
             # Kodek degisince QP'yi o kodegin olculen bandina cek: olcekler
             # birbirine cevrilemez (AV1'de 144 iyi kalite, H.265'te gecersiz).
@@ -3930,6 +3961,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "amf_sr": tab_vars["amf_sr"].get() if "amf_sr" in tab_vars else False,
             "amf_sr_algo": AMF_SR_ALGORITMALARI.get(oku("amf_sr_algo", ""), AMF_SR_VARSAYILAN_ALGO),
             "amf_frc": tab_vars["amf_frc"].get() if "amf_frc" in tab_vars else False,
+            "amf_bf": tab_vars["amf_bf"].get() if "amf_bf" in tab_vars else False,
             "output_dir": self.output_dir.get().strip(),
             "name_with_cq": self.name_with_cq.get(),
             "trim_start": self.trim_start.get(),
