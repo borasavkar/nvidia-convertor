@@ -1068,6 +1068,24 @@ def build_command(cfg, probes):
         #
         # qvbr'nin yonu de terstir (yuksek = iyi kalite), yani kaydiriciyi
         # oldugu gibi baglamak kullaniciyi yanlis yone iterdi.
+        #
+        # KULLANILMAYAN DIGER AMF SECENEKLERI DE OLCULDU (2026-08-16; gercek
+        # icerikten 20 sn, 640x480 kayipsiz referans, VMAF + dosya boyutu):
+        #     hevc_amf QP31 temel                  356 KB / 85.32
+        #     + preanalysis+lookahead / vbaq /
+        #       preencode / high_motion_boost /
+        #       async_depth                        HEPSI AYNI: 356 KB / 85.32
+        #     + usage=high_quality                 596 KB / 90.76
+        #     av1_amf QP136 temel                  344 KB / 82.53
+        #     + bf 2                               357 KB / 83.10
+        #     + aq_mode 1                          352 KB / 79.33  (KOTU)
+        # "usage" ve "bf" kaliteyi artiriyor gibi gorunuyor ama BOYUTU da
+        # buyutuyorlar; tek dogru karsilastirma ESIT BOYUT:
+        #     usage=high_quality 596 KB -> 90.76 iken temel 623 KB -> 91.38
+        #     bf=2               357 KB -> 83.10 iken temel 353 KB -> 83.01
+        # Yani ikisi de ayni egrinin uzerinde kaliyor, verim kazanci YOK.
+        # Sonuc: bu secenekler komuta EKLENMIYOR; kaliteyi belirleyen sey QP
+        # ile -quality on ayari.
         cmd.extend(["-rc", "cqp", "-qp_i", cq_val, "-qp_p", cq_val,
                     "-quality", cfg.get("amf_quality", "quality")])
         if codec_v in AMF_QP_B_KODEKLERI:
