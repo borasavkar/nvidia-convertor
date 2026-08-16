@@ -3265,6 +3265,26 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             if not var_mi:
                 silinecek.extend(DONANIM[marka]["sekmeler"])
 
+        # ACILIS SEKMESI SILMEDEN ONCE SECILIR. Sebep OLCULDU: CTkTabview.set()
+        # 100 ms sonrasina "secili olmayanlari gizle" isi planliyor ve delete()
+        # silinen sekme SECILI ise kendiliginden set() cagiriyor. Once silip
+        # sonra secince iki set() ust uste biniyor; birincinin gecikmeli isi
+        # ikincinin cercevesini de gizliyor ve icerik alani BOS kaliyordu
+        # (iz kaydi: set('H.264 (AMD)') -> set('AV1 (AMD)') ->
+        #  forget_all(exclude='H.264 (AMD)') -> forget_all(exclude='AV1 (AMD)')).
+        # Silinmeyecek bir sekmeyi ONCE secince delete() hic set() cagirmaz ve
+        # geriye tek bir gecikmeli is kalir.
+        # Kullanicinin ayarlardan gelen sekme secimi hayattaysa ONA DOKUNMA:
+        # gereksiz bir set() ikinci bir gecikmeli is demek, ustelik secimi de
+        # ezerdi (olculdu: kayitli sekme H.264 iken AV1'e atliyordu).
+        kalacak = [ad for ad in self.tabs if ad not in silinecek]
+        if kalacak:
+            simdiki = self.tabview.get()
+            hedef = (simdiki if simdiki in kalacak else
+                     VARSAYILAN_SEKME if VARSAYILAN_SEKME in kalacak else kalacak[0])
+            if simdiki != hedef:
+                self.tabview.set(hedef)
+
         for ad in silinecek:
             if ad not in self.tabs:
                 continue
@@ -3281,16 +3301,32 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         if not bulunan:
             self.log("   ⚠️ Yalnızca CPU (VP9) ve altyazı modu kullanılabilir.")
 
-        # Acilis sekmesi burada seciliyor: silme islemleri BITTIKTEN sonra.
-        # Boylece CTkTabview'in set() ile planladigi gecikmeli "digerlerini
-        # gizle" isi her zaman GECERLI bir sekme adini korur. Kurulum
-        # sirasinda secmek, o sekme sonradan silinince icerik alanini bos
-        # birakiyordu (bkz. setup'taki not).
+        # Secim yukarida, SILMEDEN ONCE yapildi. Burada yalnizca beklenmedik
+        # bir durumda (secili sekme yine de yok olduysa) toparlanir.
         kalan = [ad for ad in self.tabs]
-        if kalan:
-            hedef = VARSAYILAN_SEKME if VARSAYILAN_SEKME in self.tabs else kalan[0]
-            self.tabview.set(hedef)
+        if kalan and self.tabview.get() not in self.tabs:
+            self.tabview.set(kalan[0])
         self.on_tab_change()
+        # Gecikmeli isler bittikten sonra son bir kontrol (bkz. asagidaki not).
+        self.after(250, self._sekme_cercevesini_garantile)
+
+    def _sekme_cercevesini_garantile(self):
+        """
+        Secili sekmenin cercevesi ekranda degilse yeniden yerlestirir.
+
+        Neden gerekli: CTkTabview.set() 100 ms SONRASINA "secili olmayan
+        sekmeleri gizle" isi planliyor. Acilista birden fazla secim yapiliyor
+        (ayarlardan gelen sekme + donanim taramasindan sonraki duzeltme) ve
+        eski is, yeni secilen sekmenin cercevesini de gizleyebiliyor. Sonuc:
+        sekme seridi doluyken icerik alani BOS. Zamanlamayi CTk belirledigi
+        icin tek saglam yol, isler bittikten sonra sonuca BAKMAK.
+        """
+        try:
+            ad = self.tabview.get()
+            if ad in self.tabs and not self.tabview.tab(ad).winfo_ismapped():
+                self.tabview.set(ad)
+        except Exception:
+            pass
 
     def _refresh_all_cq_displays(self):
         """Ayarlar yuklendikten sonra CQ etiket/renklerini tazeler."""
