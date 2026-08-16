@@ -259,13 +259,13 @@ CQ_RANGES = {
     },
 }
 
-# Varsayilan artik AYRI BIR TABLODA TUTULMUYOR: onerilen araligin ALT SINIRI
-# (= en yuksek kalite ucu) dogrudan CQ_RANGES'ten okunur (bkz. get_cq_default).
+# Varsayilan artik AYRI BIR TABLODA TUTULMUYOR: onerilen araligin UST SINIRI
+# dogrudan CQ_RANGES'ten okunur (bkz. get_cq_default).
 #
-# Neden alt sinir: sekme acildiginda kullanici onerilen bandin EN IYI kalite
-# noktasinda baslasin, oradan istedigi kadar assagi indirsin. Ortadan baslamak
-# arsiv icin dusuk kaliyordu - gercek 4K bir kaynakta ortadaki deger VMAF 80.7
-# uretti, hedef band 90-96 iken.
+# Neden ust sinir: bu bandin ust ucu OLCULEN VMAF ~90 noktasidir, yani
+# "gorunur kayip baslamadan onceki en kucuk dosya". Once alt uc (VMAF ~96)
+# kullaniliyordu; arsiv icin dogruydu ama dosyalar gereksiz buyuyordu.
+# Bandin disina cikilmiyor: alt uc de ust uc de olculmus degerler.
 #
 # Neden ayri tablo yok: iki tablonun ayrisması bu projede zaten bir kez kusur
 # uretti (av1_nvenc'te "1080p" anahtari eksikti, "default" devreye girip
@@ -316,6 +316,19 @@ H264_LEVEL = "5.1"    # 4.2 (auto) -> tavan kalkar; 6.2 ile ayni sonucu verdi
 
 NVIDIA, AMD = "nvidia", "amd"
 
+# AMD (AMF) sekmelerinin TEK kaynagi. Sekmeler bundan uretilir, markaya gore
+# gizleme listesi de, hata mesajlarinin "su sekmeyi kullanin" onerisi de.
+# Ayri ayri yazilsalardi bir yeniden adlandirma otekini sessizce eskitirdi.
+AMF_SEKME_ADI = {
+    "av1_amf": "AV1 (AMD)",
+    "hevc_amf": "H.265 (AMD)",
+    "h264_amf": "H.264 (AMD)",
+}
+
+# TAM GPU (kopyasiz AMF hatti) kendi sekmesinde durur; kodlayici o sekmenin
+# icinden secilir. Neden ayri sekme oldugu icin bkz. COZUCU_SECENEKLERI notu.
+TAMGPU_SEKME = "⚡ TAM GPU (AMD)"
+
 DONANIM = {
     NVIDIA: {
         "ad": "NVIDIA",
@@ -328,9 +341,25 @@ DONANIM = {
     AMD: {
         "ad": "AMD",
         "deneme": "hevc_amf",
-        "sekmeler": ("AV1 (AMD)", "H.265 (AMD)", "H.264 (AMD)"),
+        "sekmeler": tuple(AMF_SEKME_ADI.values()) + (TAMGPU_SEKME,),
     },
 }
+
+# --- SES ---
+# Varsayilan SES AYARI "kopyala". Olculdu (kullanicinin 83 dakikalik 1.mp4
+# dosyasi): kaynagin sesi 32 kbps AAC (19 MB) iken uygulama onu 128 kbps
+# Opus'a yeniden kodluyordu (72 MB) ve TEK BASINA bu, ciktinin kaynaktan
+# buyuk cikmasina yol aciyordu - video tarafi 77.5 -> 70.2 MB ile kuculmustu.
+# Kopyalama hem kayipsiz hem kucuk; mumkun olmadigi durumu uygulama zaten
+# OLCUYOR (bkz. can_copy_audio) ve kendiliginden yeniden kodlamaya duser.
+SES_KOPYALA = "Kopyala (yeniden kodlama yok)"
+
+# Arayuzde sunulan bitrate adimlari (kbps). Sinirlama bu merdiveni kullanir.
+SES_BITRATE_ADIMLARI = (64, 96, 128, 192, 256, 320)
+
+# Acilista secili gelmesi istenen sekme. Yoksa (donanimi olmadigi icin
+# silindiyse) kalan ilk sekmeye dusulur - bkz. donanimi_uygula.
+VARSAYILAN_SEKME = "⚡ SAF CUDA"
 
 # Markadan bagimsiz sekmeler: donanim olmasa da calisirlar, HIC gizlenmezler.
 # (VP9 tamamen CPU'da kodlar; sadece-altyazi hic kodlama yapmaz.)
@@ -343,7 +372,7 @@ DENEME_BOYUTU = "640x360"
 
 # AMF kalite onayarlari (-quality). NVENC'in p1..p7'sinin karsiligi.
 AMF_QUALITY_VALUES = ["quality", "balanced", "speed", "high_quality"]
-AMF_CODECS = ("hevc_amf", "av1_amf", "h264_amf")
+AMF_CODECS = tuple(AMF_SEKME_ADI)
 
 # AMF'de B-kare QP'sini AYRI alan kodlayicilar. hevc_amf'te boyle bir secenek
 # YOK; olmayanina vermek "not used for any stream" uyarisi uretir.
@@ -358,13 +387,42 @@ AMF_QP_TAVANI_VARSAYILAN = 51
 
 # VCN'in kabul ettigi en kucuk kare. Altina inilirse ffmpeg yalnizca
 # "encoder->Init() failed with error 5" der; sebebini anlamak imkansiz.
-# OLCULDU (RX 9070 XT): en kisitlayici olan hevc_amf 352 genislikte cokup
-# 384'te calisiyor; hevc ve av1 96 yukseklikte cokup 128'de calisiyor.
-# Uygulamanin en kucuk secenegi 240p (426x240) bu sinirlarin ustunde, yani
-# olcekleme secenekleri guvenli; sinir yalnizca KUCUK KAYNAK + "Orijinal"
-# birlesiminde isiriyor.
-AMF_MIN_GENISLIK = 384
-AMF_MIN_YUKSEKLIK = 128
+#
+# SINIR KODEGE GORE COK FARKLI. OLCULDU (RX 9070 XT, ffmpeg 9.0.1): her kodek
+# 2 piksellik adimlarla tarandi, sinir KESKIN cikti (hizalama kurali degil,
+# duz bir alt sinir) ve iki boyut birbirinden bagimsiz:
+#     h264_amf :  96 x  32   (94 ve 30'da coker)
+#     av1_amf  : 320 x 128   (318 ve 126'da coker)
+#     hevc_amf : 384 x 128   (382 ve 126'da coker)
+#
+# ONCEDEN UCUNE DE EN KOTU DURUM (384x128) UYGULANIYORDU ve bu, h264/av1'in
+# sorunsuz kodladigi dosyalari da engelliyordu: 320x240 bir kaynakta uc AMD
+# sekmesi de "cok kucuk" diyordu, oysa yalnizca H.265 gercekten cokuyor
+# (uygulamanin kendi komutuyla ucu de kosularak dogrulandi).
+#
+# Uygulamanin en kucuk olcekleme secenegi 240p uzun kenari 426 yapar, yani
+# YATAY videoda olcekleme secenekleri guvenli. Sinir iki durumda isirir:
+# kucuk kaynak + "Orijinal", ve DIKEY video (uzun kenar yukseklige gidince
+# genislik 240p'de 240, 360p'de 360 kalir; hevc 384 ister).
+AMF_MIN_KARE = {
+    "h264_amf": (96, 32),
+    "av1_amf": (320, 128),
+    "hevc_amf": (384, 128),
+}
+
+
+def amf_kabul_eden_sekmeler(w, h):
+    """
+    Verilen kareyi kodlayabilen AMD sekmelerinin adlari. SAF FONKSIYON.
+
+    "Cok kucuk" uyarisi bunu kullanir: kullaniciyi VP9'a (CPU, kat kat yavas)
+    ya da cozunurluk degistirmeye yollamadan once, kareyi OLDUGU GIBI kabul
+    eden bir donanim sekmesi var mi diye bakariz. Sira AMF_SEKME_ADI'ndan
+    gelir; once kalite/verim acisindan tercih edilen kodek onerilir.
+    """
+    return [ad for kod, ad in AMF_SEKME_ADI.items()
+            if w >= AMF_MIN_KARE[kod][0] and h >= AMF_MIN_KARE[kod][1]]
+
 
 # Bazi kaynak kodeklerinde DONANIM cozucusu zarar veriyor; bu sezgiye ters
 # oldugu icin olculerek bulundu (RX 9070 XT, 1080p, 3'er kosu, cikti bayt
@@ -382,9 +440,14 @@ D3D11VA_ISTEMEYEN_KODEKLER = frozenset({"av1"})
 
 # Kullanicinin donanim cozucu tercihi. "Otomatik" yukaridaki olcume uyar;
 # digerleri kullanicinin bilinçli secimidir (dusuk CPU mu, kisa sure mi).
+#
+# TAM GPU BURADA YOK, ARTIK KENDI SEKMESI VAR (bkz. TAMGPU_SEKME). Sebep:
+# o hatta altyazi gomme, renk filtresi ve taraklanma giderme CALISAMIYOR ve
+# secenek burada dururken bu ozellikler SESSIZCE atlaniyordu - kullanici
+# altyazi ekleyip 83 dakika bekledikten sonra altyazisiz dosya buluyordu.
+# Ayri sekmede yalnizca o hatta gercekten calisan secenekler gosteriliyor.
 COZUCU_SECENEKLERI = {
     "Otomatik (ölçüme göre)": "oto",
-    "TAM GPU hattı (AMF, kopyasız)": "tamgpu",
     "Donanım - GPU (d3d11va)": "donanim",
     "Yazılım - CPU (dav1d vb.)": "yazilim",
 }
@@ -417,6 +480,30 @@ AMF_EXTRA_HW_FRAMES = "10"
 # Tam GPU hattinda kare AMF yuzeyinde kalir; bu filtrelerin AMF karsiligi yok
 # ve zinciri kirar. Istenirse kullaniciya soylenip ATLANIR.
 AMF_TAMGPU_DESTEKLENMEYEN = ("renk filtresi", "taraklanma giderme", "altyazı gömme")
+
+# sr_amf = AMD'nin donanimsal HQ buyutmesi (ffmpeg -h filter=sr_amf).
+# Olculdu: 640x480 -> 1280x960 calisiyor.
+AMF_SR_ALGORITMALARI = {
+    "SR 1.1 (AMD, en iyi)": "4",
+    "SR 1.0 (AMD)": "2",
+    "Bicubic": "1",
+    "Bilinear": "0",
+}
+
+# HANGI AMF FILTRELERI BIR ARADA CALISIR - OLCULDU (RX 9070 XT, ffmpeg 9.0.1;
+# her birlesim hevc_amf ve av1_amf ile 3'er kez kosuldu):
+#     vpp_amf olcekleme                      -> 6/6 basarili
+#     vpp_amf olcekleme + format=p010        -> 6/6   (10-bit AYNI filtrede)
+#     vpp_amf(olcek+10bit) + frc_amf         -> 6/6   (zincirde IKI AMF filtresi)
+#     sr_amf tek basina                      -> 6/6
+#     sr_amf + frc_amf                       -> 5/6   COKTU
+#     sr_amf + vpp_amf(format=p010)          -> 5/6   COKTU
+#     sr_amf + vpp_amf + frc_amf             -> KILITLENDI (1 sn'lik klip, 180 sn)
+# Sonuc: sr_amf BASKA BIR AMF FILTRESIYLE BIRLESTIRILMEZ. HQ buyutme secilince
+# 10-bit ve kare katlama uygulanmaz; arayuz de o iki salteri kapatir.
+# ("-pix_fmt p010le" ile 10-bit istemek de bu hatta cokuyor: "Error
+# reinitializing filters!" - 10-bit YALNIZCA vpp_amf=format ile alinir.)
+AMF_SR_YALNIZ_CALISIR = True
 
 
 def amf_qp_tavani(codec):
@@ -499,8 +586,66 @@ SUB_DIL_SECENEKLERI = {
 }
 
 
-def get_cq_range(codec, scale):
+def ses_bitrate_sinirla(secilen, kaynak_kbps):
+    """
+    Yeniden kodlamada kullanilacak ses bitrate'ini dondurur: (deger, not).
+    SAF FONKSIYON.
+
+    Kayipli sesin kaybettigi kaliteyi geri getirmek MUMKUN DEGIL: 32 kbps'lik
+    bir kaynagi 128 kbps'e kodlamak yalnizca dosyayi buyutur. Kural: hedef,
+    kaynagin USTUNDEKI ilk adimi asamaz. Boylece kayipli -> kayipli gecis
+    icin bir kademe pay kalir (32 -> 64k), israf ise engellenir.
+
+    Kaynagin bitrate'i okunamadiysa (None; bazi MKV'lerde akis basina deger
+    yazmaz) DOKUNULMAZ - tahmin edip kaliteyi dusurmektense secimi birakiriz.
+    """
+    if not kaynak_kbps or not secilen:
+        return secilen, None
+    try:
+        secilen_kbps = int(str(secilen).rstrip("kK"))
+    except ValueError:
+        return secilen, None
+    tavan = next((adim for adim in SES_BITRATE_ADIMLARI if adim >= kaynak_kbps),
+                 SES_BITRATE_ADIMLARI[-1])
+    if secilen_kbps <= tavan:
+        return secilen, None
+    return (f"{tavan}k",
+            f"🎵 Kaynağın sesi {kaynak_kbps} kbps; {secilen} yerine {tavan}k "
+            "kullanılıyor. Daha yükseği kaybolmuş kaliteyi geri getirmez, "
+            "sadece dosyayı büyütür.")
+
+
+def cozunurluk_bandi(w, h):
+    """
+    Bir kareye EN YAKIN CQ tablosu satirini secer ("4K", "1080p", ...).
+    Boyut bilinmiyorsa None. SAF FONKSIYON.
+
+    Neden gerekli: kullanici "Orijinal" secince tabloda o adda satir YOK ve
+    eskiden dogrudan "default" satira dusuluyordu. "default" 1080p turevidir,
+    yani cozunurluk ne olursa olsun 1080p tavsiyesi veriliyordu. 4K bir
+    kaynakta bu sessizce yanlis: av1_amf'te OLCULEN 4K bandi 70-104 iken sekme
+    144'te aciliyordu ve 144, gercek 4K icerikte VMAF 90'in ALTINA denk
+    geliyor (bkz. CQ_RANGES av1_amf notu).
+
+    Satir uzun kenara gore ve EN YAKIN olan secilir (buyuk-esit degil): 3500
+    piksellik bir kaynak 1440p'den cok 4K'ya benzer. 3840'in ustu (8K vb.)
+    icin olcum YOK; en yakin satir olarak 4K kullanilir.
+    """
+    uzun = max(w or 0, h or 0)
+    if uzun <= 0:
+        return None
+    return min(SCALE_MAP, key=lambda ad: abs(SCALE_MAP[ad] - uzun))
+
+
+def get_cq_range(codec, scale, kaynak_boyut=None):
+    """
+    Onerilen CQ/QP araligi. "Orijinal" secildiyse ve kaynagin boyutu
+    biliniyorsa band KAYNAGIN cozunurlugunden turer (bkz. cozunurluk_bandi).
+    kaynak_boyut verilmezse eski davranis: "default" satiri.
+    """
     codec_ranges = CQ_RANGES.get(codec, CQ_RANGES["hevc_nvenc"])
+    if scale == "Orijinal" and kaynak_boyut:
+        scale = cozunurluk_bandi(*kaynak_boyut) or scale
     return codec_ranges.get(scale, codec_ranges["default"])
 
 
@@ -519,12 +664,21 @@ def komut_metni(cmd):
     return " ".join(parcalar)
 
 
-def get_cq_default(codec, scale):
+def get_cq_default(codec, scale, kaynak_boyut=None):
     """
-    Sekme acildiginda kullanilacak CQ/QP: onerilen araligin ALT SINIRI, yani
-    bandin EN YUKSEK KALITE ucu. Kullanici oradan istedigi kadar asagi iner.
+    Sekme acildiginda kullanilacak CQ/QP: onerilen araligin UST SINIRI, yani
+    "camurlasma riski" esiginin hemen altindaki en tutumlu deger.
+
+    KULLANICI TERCIHI (2026-08-16): eskiden bandin ALT ucu (en yuksek kalite)
+    kullaniliyordu. Amac arsiv kalitesiydi ama pratikte dosyalar gereksiz
+    buyuyordu - olculdu, 32 kbps'lik gercek bir kaynakta bile cikti kaynaktan
+    buyuk cikabiliyor. Ust sinir hala OLCULEN bandin icinde: VMAF ~90, yani
+    "gorunur kayip baslamadan onceki en kucuk dosya".
+
+    Bandin kendisi kaynagin cozunurlugune gore secilir (bkz. get_cq_range),
+    yani bu deger de kaynaga gore degisir.
     """
-    return get_cq_range(codec, scale)[0]
+    return get_cq_range(codec, scale, kaynak_boyut)[1]
 
 
 def parse_time(metin):
@@ -585,6 +739,27 @@ def cuda_color_roundtrip_ok(pix_fmt):
     return cuda_download_format(pix_fmt) != "p016le"
 
 
+def tamgpu_hedef_boyut(cfg):
+    """
+    TAM GPU hattinda olceklemenin hedef karesi (w, h); olcekleme yoksa None.
+    SAF FONKSIYON.
+
+    AMF filtreleri (vpp_amf/sr_amf) ifade KABUL ETMIYOR - "-2" ya da
+    "if(gt(a,1),..)" yazilamaz - bu yuzden iki boyut da burada acikca
+    hesaplanir. Kaynak orani bilinmiyorsa 16:9 varsayilir.
+    """
+    if cfg.get("scale") == "Orijinal":
+        return None
+    uzun = SCALE_MAP.get(cfg.get("scale"))
+    if uzun is None:
+        return None
+    kw, kh = cfg.get("cikti_boyutu") or (0, 0)
+    if kw and kh:
+        return (uzun, max(2, round(uzun * kh / kw))) if kw >= kh else \
+               (max(2, round(uzun * kw / kh)), uzun)
+    return (uzun, round(uzun * 9 / 16))
+
+
 def build_filters(cfg, probes):
     """
     Video filtre zincirini kurar. SAF FONKSIYON.
@@ -605,21 +780,53 @@ def build_filters(cfg, probes):
     # Kare AMF yuzeyinde kalir. Yalnizca vpp_amf calisabilir; renk/taraklanma/
     # altyazi filtrelerinin AMF karsiligi yok ve zinciri kirarlar.
     if cfg.get("tam_gpu"):
-        if cfg["scale"] != "Orijinal":
-            w = SCALE_MAP.get(cfg["scale"])
-            if w is None:
-                notes.append(f"⚠️ Bilinmeyen çözünürlük: {cfg['scale']}, Orijinal kullanılıyor.")
-            else:
-                # vpp_amf ifade kabul etmiyor; uzun kenari kaynagin oranina
-                # gore hesaplayip iki boyutu da acikca veriyoruz.
-                kw, kh = cfg.get("cikti_boyutu") or (0, 0)
-                if kw and kh:
-                    hedef = (w, max(2, round(w * kh / kw))) if kw >= kh else \
-                            (max(2, round(w * kw / kh)), w)
-                else:
-                    hedef = (w, round(w * 9 / 16))
-                vf_filters.append(
-                    f"vpp_amf=w={hedef[0]}:h={hedef[1]}:scale_type={AMF_TAMGPU_SCALE}")
+        hedef = tamgpu_hedef_boyut(cfg)
+        if cfg["scale"] != "Orijinal" and hedef is None:
+            notes.append(f"⚠️ Bilinmeyen çözünürlük: {cfg['scale']}, Orijinal kullanılıyor.")
+
+        # HQ buyutme (sr_amf) YALNIZ calisir: baska bir AMF filtresiyle
+        # birlesince coküyor, ucu bir arada ise kilitleniyor (bkz.
+        # AMF_SR_YALNIZ_CALISIR olcumu). Arayuz de bu iki salteri kapatir;
+        # buradaki kontrol kuyruga eski ayarlarla giren isler icin.
+        hq = bool(cfg.get("amf_sr")) and hedef is not None
+        if hq:
+            sr = f"sr_amf=w={hedef[0]}:h={hedef[1]}:algorithm={cfg.get('amf_sr_algo', '4')}"
+            keskinlik = cfg.get("amf_sr_sharpness")
+            if keskinlik not in (None, "", -1):
+                sr += f":sharpness={keskinlik}"
+            vf_filters.append(sr)
+            engellenen = [ad for ad, acik in (("10-bit", cfg.get("ten_bit")),
+                                              ("kare hızı katlama", cfg.get("amf_frc")))
+                          if acik]
+            if engellenen:
+                notes.append("⚠️ HQ büyütme açıkken " + " ve ".join(engellenen) +
+                             " ATLANDI: ölçüldü, AMD'nin HQ büyütmesi başka bir "
+                             "AMF filtresiyle birlikte çöküyor ya da kilitleniyor.")
+        else:
+            # 10-bit AYNI vpp_amf filtresinde istenir; ayri filtre eklemek
+            # zinciri uzatir ve kararsizlastirir (olculdu).
+            vpp = []
+            if hedef:
+                vpp.append(f"w={hedef[0]}:h={hedef[1]}:scale_type={AMF_TAMGPU_SCALE}")
+            if cfg.get("ten_bit"):
+                vpp.append("format=p010")
+            if vpp:
+                vf_filters.append("vpp_amf=" + ":".join(vpp))
+            if cfg.get("amf_frc"):
+                vf_filters.append("frc_amf")
+                notes.append("🎞️ Kare hızı hareket interpolasyonuyla İKİ KATINA "
+                             "çıkarılıyor (frc_amf). Dosya büyür ve görüntü "
+                             "'video' karakterine kayar.")
+
+        # Renk etiketi bu hatta da yazilabiliyor (setparams metadata filtresi;
+        # kareye dokunmadigi icin AMF yuzeyini bozmuyor - olculdu). 10-bit
+        # cikti + etiketsiz kaynak birlesimi olmadan sahte HDR uretiyordu.
+        if probes.get("renk_etiketsiz"):
+            vf_filters.append("setparams=color_primaries=bt709:color_trc=bt709"
+                              ":colorspace=bt709:range=tv")
+            notes.append("🎨 Kaynakta renk etiketi yok; çıktı BT.709 olarak "
+                         "işaretlendi.")
+
         atlanan = []
         if color_filter_of(cfg):
             atlanan.append("renk filtresi")
@@ -870,6 +1077,24 @@ def build_command(cfg, probes):
         #
         # qvbr'nin yonu de terstir (yuksek = iyi kalite), yani kaydiriciyi
         # oldugu gibi baglamak kullaniciyi yanlis yone iterdi.
+        #
+        # KULLANILMAYAN DIGER AMF SECENEKLERI DE OLCULDU (2026-08-16; gercek
+        # icerikten 20 sn, 640x480 kayipsiz referans, VMAF + dosya boyutu):
+        #     hevc_amf QP31 temel                  356 KB / 85.32
+        #     + preanalysis+lookahead / vbaq /
+        #       preencode / high_motion_boost /
+        #       async_depth                        HEPSI AYNI: 356 KB / 85.32
+        #     + usage=high_quality                 596 KB / 90.76
+        #     av1_amf QP136 temel                  344 KB / 82.53
+        #     + bf 2                               357 KB / 83.10
+        #     + aq_mode 1                          352 KB / 79.33  (KOTU)
+        # "usage" ve "bf" kaliteyi artiriyor gibi gorunuyor ama BOYUTU da
+        # buyutuyorlar; tek dogru karsilastirma ESIT BOYUT:
+        #     usage=high_quality 596 KB -> 90.76 iken temel 623 KB -> 91.38
+        #     bf=2               357 KB -> 83.10 iken temel 353 KB -> 83.01
+        # Yani ikisi de ayni egrinin uzerinde kaliyor, verim kazanci YOK.
+        # Sonuc: bu secenekler komuta EKLENMIYOR; kaliteyi belirleyen sey QP
+        # ile -quality on ayari.
         cmd.extend(["-rc", "cqp", "-qp_i", cq_val, "-qp_p", cq_val,
                     "-quality", cfg.get("amf_quality", "quality")])
         if codec_v in AMF_QP_B_KODEKLERI:
@@ -926,12 +1151,21 @@ def build_command(cfg, probes):
             notes.append("🎵 Ses yeniden kodlanmadan kopyalanıyor (kalite kaybı yok).")
         else:
             # WebM yalnizca opus/vorbis kabul eder; boyle durumlarda isi
-            # patlatmak yerine yuksek bitrate ile kodluyoruz.
-            cmd.extend(["-c:a", codec_a, "-b:a", "192k"])
+            # patlatmak yerine yuksek bitrate ile kodluyoruz. "Yuksek" olmasi
+            # kaynagi ASMAK anlamina gelmez: 32 kbps'lik bir sesi 192k'ya
+            # kodlamak yalnizca dosyayi buyutur (bkz. ses_bitrate_sinirla).
+            yedek_bitrate, _ = ses_bitrate_sinirla("192k", probes.get("audio_bitrate"))
+            cmd.extend(["-c:a", codec_a, "-b:a", yedek_bitrate])
             notes.append(f"⚠️ Kaynak ses '{container}' konteynerine kopyalanamıyor; "
-                         f"{codec_a} 192k ile yeniden kodlanacak.")
+                         f"{codec_a} {yedek_bitrate} ile yeniden kodlanacak.")
     else:
-        cmd.extend(["-c:a", codec_a, "-b:a", cfg["a_bitrate"]])
+        # Kaynaktan yuksek bitrate secmek kaliteyi ARTIRMAZ, yalnizca dosyayi
+        # buyutur (bkz. ses_bitrate_sinirla).
+        a_bitrate, ses_notu = ses_bitrate_sinirla(cfg["a_bitrate"],
+                                                  probes.get("audio_bitrate"))
+        cmd.extend(["-c:a", codec_a, "-b:a", a_bitrate])
+        if ses_notu:
+            notes.append(ses_notu)
 
     for anahtar, deger in (("title", cfg["meta_title"]), ("artist", cfg["meta_artist"]),
                            ("album", cfg["meta_album"]), ("grouping", cfg["meta_grouping"])):
@@ -1265,6 +1499,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # --- KUYRUK VE KALICI AYARLAR ---
         self.job_queue = []          # collect_config() anlik goruntuleri
         self.cq_refreshers = {}      # sekme adi -> CQ etiketini tazeleyen callback
+        # "Orijinal" secildiginde onerilen CQ bandi kaynagin cozunurlugundan
+        # gelir; onbellek SART, cunku etiket kaydirici her oynadiginda
+        # tazeleniyor ve her seferinde ffprobe kosmak arayuzu kilitlerdi.
+        self._cq_boyut_onbellek = (None, None)   # (dosya yolu, (w, h))
         # {marka: True/False} - acilista OLCULUR (bkz. donanimi_uygula).
         # Tarama bitene kadar bos: hicbir sey varsayilmaz.
         self.donanim = {}
@@ -1304,6 +1542,11 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         self.video_path = ctk.StringVar()
         self.sub_path = ctk.StringVar()
+        # Dosya degisince onerilen CQ bandi da degisir (band kaynagin
+        # cozunurlugunden turuyor). Trace kullaniliyor ki hem dosya secme
+        # penceresi hem surukle-birak hem de ileride eklenecek her yol ayni
+        # tazelemeyi tetiklesin.
+        self.video_path.trace_add("write", lambda *a: self._refresh_all_cq_displays())
 
         # --- KÖK YERLEŞİM ---
         # Ayar kartları + sekmeler tek başına ~1200 px istiyor; bu 1080p bir
@@ -1457,14 +1700,23 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         self.create_tab("AV1 (Standart)", "av1_nvenc")
         self.create_tab("H.265 (Standart)", "hevc_nvenc")
         self.create_tab("H.264 (Standart)", "h264_nvenc")
-        self.create_amd_tab("AV1 (AMD)", "av1_amf")
-        self.create_amd_tab("H.265 (AMD)", "hevc_amf")
-        self.create_amd_tab("H.264 (AMD)", "h264_amf")
+        # Sekme adlari AMF_SEKME_ADI'ndan gelir: "cok kucuk" uyarisi kullaniciyi
+        # ada gore yonlendiriyor, iki yerde ayri yazilsa biri eskirdi.
+        for amf_kodek, amf_sekme in AMF_SEKME_ADI.items():
+            self.create_amd_tab(amf_sekme, amf_kodek)
+        self.create_tamgpu_tab(TAMGPU_SEKME)
         self.create_vp9_tab("VP9 (Google VOD)")
         self.create_cuda_tab("⚡ SAF CUDA")
         self.create_remux_tab("💬 SADECE ALTYAZI")
 
-        self.tabview.set("⚡ SAF CUDA")
+        # Acilis sekmesi BURADA SECILMEZ; donanim taramasindan SONRA secilir
+        # (bkz. donanimi_uygula). Sebep olculdu: CTkTabview.set() 100 ms
+        # sonrasina "secili olmayan sekmeleri gizle" isi planliyor. Burada
+        # "SAF CUDA" secilip hemen ardindan o sekme "donanimi yok" diye
+        # silinince, gecikmeli is ARTIK OLMAYAN bir adi koruyor ve yerine
+        # gecen sekmenin cercevesini de gizliyordu. Sonuc: acilista sekme
+        # seridi doluyken icerik alani BOS geliyor ve ancak kullanici bir
+        # sekmeye tiklayinca duzeliyordu.
 
         # 4. BAŞLAT BUTONU
         self.btn_start = ctk.CTkButton(
@@ -1691,10 +1943,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     # ORTAK KART URETICILERI
     # (create_tab ile create_cuda_tab arasindaki kopya kod buraya toplandi)
     # =======================================================
-    AUDIO_VALUES = ["Kopyala (yeniden kodlama yok)", "64k", "96k", "128k", "192k", "256k", "320k"]
+    AUDIO_VALUES = [SES_KOPYALA] + [f"{k}k" for k in SES_BITRATE_ADIMLARI]
     PRESET_VALUES = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"]
     SCALE_VALUES = ["Orijinal", "240p", "360p", "480p", "720p", "1080p", "1440p", "4K"]
-    VP9_AUDIO_VALUES = ["Kopyala (yeniden kodlama yok)", "64k", "96k", "128k", "192k"]
+    VP9_AUDIO_VALUES = [SES_KOPYALA, "64k", "96k", "128k", "192k"]
 
     # Kayitli ayarlar yuklenirken dogrulama icin: combobox'lar salt-okunur
     # oldugundan gecersiz bir deger kutuda takili kalir ve ffmpeg'e gider.
@@ -1704,7 +1956,13 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         "preset": PRESET_VALUES,
         "scale": SCALE_VALUES,
         "interp_algo": ["Otomatik", "bilinear", "bicubic", "lanczos"],
-        "selected_codec": ["AV1 (av1_nvenc)", "H.265 (hevc_nvenc)", "H.264 (h264_nvenc)"],
+        # NVENC (SAF CUDA) ve AMF (TAM GPU) sekmeleri ayni degisken adini
+        # kullanir; ikisinin degerleri de gecerli sayilmali, yoksa kaydedilmis
+        # ayar dogrulamadan gecemez ve sessizce yok sayilir.
+        "selected_codec": (["AV1 (av1_nvenc)", "H.265 (hevc_nvenc)", "H.264 (h264_nvenc)"]
+                           + [f"{ad.split(' ')[0]} ({kod})"
+                              for kod, ad in AMF_SEKME_ADI.items()]),
+        "amf_sr_algo": list(AMF_SR_ALGORITMALARI),
         "vp9_quality": ["good (Önerilen)", "best (Aşırı Yavaş)", "realtime"],
         "vp9_speed": ["0 (Maksimum Kalite)", "1 (VOD Önerisi)", "2 (Standart)", "3 (Hızlı)", "4", "5 (En Hızlı)"],
         "vp9_tiles": ["0 (Tek Sütun)", "1 (Düşük Çöz. için)", "2 (1080p için)", "3 (4K/1440p için)", "4 (8K)"],
@@ -1817,7 +2075,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             return istenen
 
     def _tab_meta(self, is_pure_cuda, is_vp9, accent, supports_subs=True,
-                  is_remux=False):
+                  is_remux=False, is_tamgpu=False):
         """Sekme davranisini isim icinde metin aramak yerine veri olarak tasir."""
         return {
             "is_pure_cuda": is_pure_cuda,
@@ -1826,15 +2084,24 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "supports_subs": supports_subs,
             # True ise kodlama YOK: video/ses kopyalanir, yalnizca altyazi eklenir.
             "is_remux": is_remux,
+            # True ise kare AMF yuzeyinde kalir (kopyasiz hat, bkz.
+            # create_tamgpu_tab). Cozucu artik burada belirlenir, sekme
+            # icindeki bir listeyle degil.
+            "is_tamgpu": is_tamgpu,
         }
 
     def _nvenc_tab_vars(self, container_default, cq_default):
         """Her iki NVENC sekmesinin paylastigi degisken seti."""
         return {
             "container": ctk.StringVar(value=container_default),
-            "audio_bitrate": ctk.StringVar(value="128k"),
+            "audio_bitrate": ctk.StringVar(value=SES_KOPYALA),
             "preset": ctk.StringVar(value="p7"),
             "cq": ctk.IntVar(value=cq_default),
+            # Tk degiskeni DEGIL, duz sayi: en son OTOMATIK konan CQ. Dosya
+            # degisince kadrani ancak kullanici ellememisse tazeliyoruz ve
+            # bunu anlamanin tek yolu bu (bkz. _update_cq_display). Ayarlar
+            # kaydedilirken suzuluyor (hasattr(v, "get") kosulu).
+            "cq_auto": cq_default,
             "scale": ctk.StringVar(value="Orijinal"),
             "metadata_title": ctk.StringVar(value=""),
             "metadata_artist": ctk.StringVar(value=""),
@@ -1882,26 +2149,66 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     # =======================================================
     # ORTAK CQ SLIDER GÜNCELLEME
     # =======================================================
+    def _kaynak_boyut_cq(self):
+        """
+        CQ bandi icin kaynagin (genislik, yukseklik) degeri; yoksa None.
+        Onbellekli: bkz. _cq_boyut_onbellek.
+        """
+        yol = self.video_path.get()
+        if not yol or not os.path.isfile(yol):
+            return None
+        if self._cq_boyut_onbellek[0] != yol:
+            self._cq_boyut_onbellek = (yol, self.get_video_resolution(yol))
+        boyut = self._cq_boyut_onbellek[1]
+        return boyut if boyut and boyut[0] and boyut[1] else None
+
     def _update_cq_display(self, codec, tab_vars, lbl_cq_title, lbl_cq_status, slider_cq, label_prefix="CQ (Kalite)"):
         v = int(float(tab_vars["cq"].get()))
-        lbl_cq_title.configure(text=f"{label_prefix}: {v}")
-
         current_scale = tab_vars["scale"].get()
 
-        min_cq, max_cq = get_cq_range(codec, current_scale)
+        kaynak = self._kaynak_boyut_cq()
+        min_cq, max_cq = get_cq_range(codec, current_scale, kaynak)
+
+        # "Orijinal"de band kaynagin cozunurlugundan geldigi icin DOSYA
+        # DEGISINCE kayar. Kullanici kadrani ELLEMEDIYSE (deger hala en son
+        # otomatik konan degerse) yeni bandin kalite ucuna otur; elle bir
+        # deger sectiyse ASLA dokunma. Bu olmadan sekme 1080p varsayilaniyla
+        # aciliyor ve 4K bir dosya yuklenince kirmizi uyarida oylece
+        # bekliyordu -- kullanicinin fark etmesi gerekiyordu.
+        varsayilan = get_cq_default(codec, current_scale, kaynak)
+        if (tab_vars.get("cq_auto") is not None and v == tab_vars["cq_auto"]
+                and v != varsayilan):
+            v = varsayilan
+            tab_vars["cq_auto"] = v
+            tab_vars["cq"].set(v)
+            slider_cq.set(v)
+
+        lbl_cq_title.configure(text=f"{label_prefix}: {v}")
+
+        # Bandin neye gore secildigini yaz: "Orijinal"de sayilar kaynaga gore
+        # degisiyor ve sebebi gorunmezse kullanici kadranin kendiliginden
+        # oynadigini saniyor.
+        band_eki = ""
+        if current_scale == "Orijinal" and kaynak:
+            ad = cozunurluk_bandi(*kaynak)
+            if ad:
+                band_eki = f" — {ad} kaynak"
 
         if min_cq <= v <= max_cq:
-            lbl_cq_status.configure(text=f"✨ Önerilen Aralık ({min_cq}-{max_cq})", text_color="#00FF00")
+            lbl_cq_status.configure(text=f"✨ Önerilen Aralık ({min_cq}-{max_cq}){band_eki}", text_color="#00FF00")
             slider_cq.configure(progress_color="#00FF00")
         elif v < min_cq:
-            lbl_cq_status.configure(text=f"⚠️ Gereksiz Büyük Dosya (< {min_cq})", text_color="#FFA500")
+            lbl_cq_status.configure(text=f"⚠️ Gereksiz Büyük Dosya (< {min_cq}){band_eki}", text_color="#FFA500")
             slider_cq.configure(progress_color="#FFA500")
         else:
-            lbl_cq_status.configure(text=f"❌ Çamurlaşma Riski (> {max_cq})", text_color="#FF4444")
+            lbl_cq_status.configure(text=f"❌ Çamurlaşma Riski (> {max_cq}){band_eki}", text_color="#FF4444")
             slider_cq.configure(progress_color="#FF4444")
 
     def _auto_set_cq(self, codec, scale, tab_vars, slider_cq, lbl_cq_title, lbl_cq_status, label_prefix="CQ (Kalite)"):
-        val = get_cq_default(codec, scale)
+        val = get_cq_default(codec, scale, self._kaynak_boyut_cq())
+        # Otomatik konan degeri isaretle: kullanicinin elle sectigi bir degeri
+        # dosya degisiminde ezmemek icin tek dayanak bu (bkz. _update_cq_display).
+        tab_vars["cq_auto"] = val
         tab_vars["cq"].set(val)
         slider_cq.set(val)
         self._update_cq_display(codec, tab_vars, lbl_cq_title, lbl_cq_status, slider_cq, label_prefix)
@@ -1916,8 +2223,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         tab_vars = {
             "codec": "libvpx-vp9",
             "container": ctk.StringVar(value="webm"),
-            "audio_bitrate": ctk.StringVar(value="128k"),
+            "audio_bitrate": ctk.StringVar(value=SES_KOPYALA),
             "cq": ctk.IntVar(value=31),
+            "cq_auto": 31,          # bkz. _nvenc_tab_vars: elle secim korumasi
             "scale": ctk.StringVar(value="Orijinal"),
             "vp9_quality": ctk.StringVar(value="good (Önerilen)"),
             "vp9_speed": ctk.StringVar(value="1 (VOD Önerisi)"),
@@ -1954,7 +2262,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         card_format.pack(fill="x", pady=(0, 10))
         ReadOnlyComboBox(card_format, variable=tab_vars["container"], values=["webm", "mkv"]).pack(fill="x", padx=15, pady=(0, 5))
         ctk.CTkLabel(card_format, text="* VP9 için WebM standarttır (Audio: Opus)", font=("Arial", 10, "italic"), text_color="gray").pack(anchor="w", padx=15, pady=(0, 5))
-        ReadOnlyComboBox(card_format, variable=tab_vars["audio_bitrate"], values=["Kopyala (yeniden kodlama yok)", "64k", "96k", "128k", "192k"]).pack(fill="x", padx=15, pady=(5, 15))
+        ReadOnlyComboBox(card_format, variable=tab_vars["audio_bitrate"], values=self.VP9_AUDIO_VALUES).pack(fill="x", padx=15, pady=(5, 15))
 
         card_vp9 = self.create_card(col_left, "🧠 VP9 İşlemci Motoru (CPU)")
         card_vp9.pack(fill="x", pady=10)
@@ -2185,6 +2493,200 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     # =======================================================
     # SAF CUDA SEKMESİ
     # =======================================================
+    def create_tamgpu_tab(self, tab_name):
+        """
+        TAM GPU (AMF) sekmesi: cozme, olcekleme ve kodlama GPU'da kalir, kare
+        hic sistem bellegine inmez.
+
+        Neden ayri sekme: bu hatta altyazi gomme, renk filtresi ve taraklanma
+        giderme CALISAMIYOR. Eskiden bu bir "kod cozucu" secenegiydi ve
+        secildiginde bu ozellikler sessizce atlaniyordu - kullanici altyazi
+        secip uzun bir kodlamadan sonra altyazisiz dosya buluyordu. Burada o
+        secenekler HIC GOSTERILMIYOR; yalnizca olculerek calistigi dogrulanan
+        yetenekler var (bkz. AMF_SR_YALNIZ_CALISIR olcumu).
+        """
+        self.tabview.add(tab_name)
+        frame = self.tabview.tab(tab_name)
+
+        tab_vars = self._nvenc_tab_vars("mkv", get_cq_default("av1_amf", "Orijinal"))
+        tab_vars["selected_codec"] = ctk.StringVar(value="AV1 (av1_amf)")
+        tab_vars["amf_quality"] = ctk.StringVar(value="quality")
+        # Paylasilan degisken setinde "kaynaktan buyutme yapma" ACIK gelir ve
+        # bu sekmede o salter YOK. Acik birakilirsa buyutme sessizce iptal
+        # olur; HQ buyutme ozelligi de zaten buyutme demek oldugu icin
+        # tamamen olu kalirdi (olculdu: sr_amf hic komuta girmiyordu).
+        tab_vars["no_upscale"].set(False)
+        tab_vars["amf_sr"] = ctk.BooleanVar(value=False)
+        tab_vars["amf_sr_algo"] = ctk.StringVar(value=list(AMF_SR_ALGORITMALARI)[0])
+        tab_vars["amf_frc"] = ctk.BooleanVar(value=False)
+        tab_vars.update(self._tab_meta(is_pure_cuda=False, is_vp9=False,
+                                       accent=("#c0392b", "#922b21", "white"),
+                                       supports_subs=False, is_tamgpu=True))
+        self.tabs[tab_name] = tab_vars
+
+        main_grid = ctk.CTkFrame(frame, fg_color="transparent")
+        main_grid.pack(fill="both", expand=True)
+        main_grid.columnconfigure(0, weight=1)
+        main_grid.columnconfigure(1, weight=1)
+        col_left = ctk.CTkFrame(main_grid, fg_color="transparent")
+        col_left.grid(row=0, column=0, sticky="nsew", padx=5)
+
+        def secili_kodek():
+            return tab_vars["selected_codec"].get().split("(")[1].split(")")[0]
+
+        # En son uygulanan QP tavani; her kaydirici hareketinde widget'i
+        # yeniden yapilandirmamak icin tutuluyor.
+        son_tavan = {"deger": None}
+
+        def tavani_uygula(kodek):
+            """
+            QP olcegini KODEGE uydurur (av1_amf 0-255, digerleri 0-51) ve
+            eldeki deger tavanin ustundeyse gecerli bir degere ceker.
+
+            OLCULDU, bu kontrol olmadan gercek bir kusur cikiyor: ayarlar geri
+            yuklenirken kodek H.265 olarak gelse bile kaydirici AV1 icin
+            kurulmus 0-255 olceginde kaliyor; oradan secilen QP ffmpeg'e
+            gidince "Error opening output files: Result too large" ile
+            duruyor - kullanicinin anlamasi imkansiz bir mesaj.
+            """
+            tavan = amf_qp_tavani(kodek)
+            if son_tavan["deger"] != tavan:
+                slider_cq.configure(to=tavan, number_of_steps=tavan)
+                lbl_olcek.configure(text=f"* Bu kodlayıcının QP ölçeği 0-{tavan}. "
+                                         "Düşük = büyük dosya.")
+                son_tavan["deger"] = tavan
+            if int(float(tab_vars["cq"].get())) > tavan:
+                yeni = get_cq_default(kodek, tab_vars["scale"].get(),
+                                      self._kaynak_boyut_cq())
+                tab_vars["cq_auto"] = yeni
+                tab_vars["cq"].set(yeni)
+                slider_cq.set(yeni)
+
+        def on_cq_change(*args):
+            kodek = secili_kodek()
+            tavani_uygula(kodek)
+            self._update_cq_display(kodek, tab_vars, lbl_cq_title,
+                                    lbl_cq_status, slider_cq, "QP (Kalite)")
+
+        card_codec = self.create_card(col_left, "🔴 Donanım Motoru (AMF, kopyasız)")
+        card_codec.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(card_codec, text="Kodlayıcı:").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_codec, variable=tab_vars["selected_codec"],
+                         values=[f"{ad.split(' ')[0]} ({kod})"
+                                 for kod, ad in AMF_SEKME_ADI.items()],
+                         command=lambda secim: on_kodek_degisti(secim)
+                         ).pack(fill="x", padx=15, pady=(0, 10))
+        ctk.CTkLabel(card_codec, text="Konteyner:").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_codec, variable=tab_vars["container"],
+                         values=["mkv", "mp4"]).pack(fill="x", padx=15, pady=(0, 15))
+
+        self._create_audio_card(col_left, tab_vars, pady=10)
+
+        card_amf = self.create_card(col_left, "⚙️ AMF Ön Ayarları")
+        card_amf.pack(fill="x", pady=10)
+        ctk.CTkLabel(card_amf, text="Kalite Ön Ayarı:").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_amf, variable=tab_vars["amf_quality"],
+                         values=AMF_QUALITY_VALUES).pack(fill="x", padx=15, pady=(0, 10))
+        lbl_cq_title = ctk.CTkLabel(card_amf, text="QP (Kalite):", font=("Arial", 13, "bold"))
+        lbl_cq_status = ctk.CTkLabel(card_amf, text="", font=("Arial", 11, "italic"))
+        lbl_cq_title.pack(anchor="w", padx=15, pady=(5, 0))
+        lbl_cq_status.pack(anchor="w", padx=15, pady=(0, 5))
+        tavan = amf_qp_tavani("av1_amf")
+        slider_cq = ctk.CTkSlider(card_amf, from_=0, to=tavan, number_of_steps=tavan,
+                                  variable=tab_vars["cq"], command=on_cq_change)
+        slider_cq.pack(fill="x", padx=15, pady=(0, 5))
+        lbl_olcek = ctk.CTkLabel(card_amf, text="", font=("Arial", 10, "italic"),
+                                 text_color="gray", anchor="w")
+        lbl_olcek.pack(anchor="w", padx=15, pady=(0, 10))
+
+        col_right = ctk.CTkFrame(main_grid, fg_color="transparent")
+        col_right.grid(row=0, column=1, sticky="nsew", padx=5)
+
+        card_res = self.create_card(col_right, "📐 Çözünürlük (GPU'da)")
+        card_res.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(card_res, text="Ölçekleme:").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_res, variable=tab_vars["scale"], values=self.SCALE_VALUES,
+                         command=lambda secim: self._auto_set_cq(
+                             secili_kodek(), secim, tab_vars, slider_cq,
+                             lbl_cq_title, lbl_cq_status, "QP (Kalite)")
+                         ).pack(fill="x", padx=15, pady=(0, 10))
+        ctk.CTkLabel(card_res, text="HQ büyütme algoritması:").pack(anchor="w", padx=15)
+        cb_sr_algo = ReadOnlyComboBox(card_res, variable=tab_vars["amf_sr_algo"],
+                                      values=list(AMF_SR_ALGORITMALARI))
+        cb_sr_algo.pack(fill="x", padx=15, pady=(0, 15))
+
+        self._create_metadata_card(col_right, tab_vars)
+
+        kart_salter = self.create_card(main_grid, "🛠️ TAM GPU Seçenekleri")
+        kafes = ctk.CTkFrame(kart_salter, fg_color="transparent")
+        kafes.pack(fill="x", padx=10, pady=(0, 10))
+        for i in range(3):
+            kafes.grid_columnconfigure(i, weight=1, uniform="salter")
+
+        def on_hq_degisti():
+            """
+            HQ buyutme acikken 10-bit ve kare katlama KAPATILIR.
+            Olculdu: sr_amf baska bir AMF filtresiyle birlesince 6 kosuda 1
+            cokuyor, ucu bir arada ise ffmpeg tamamen kilitleniyor. Salterleri
+            acik birakip sessizce atlamak yerine gorunur bicimde kapatiyoruz.
+            """
+            hq = tab_vars["amf_sr"].get()
+            for cb in (cb_10bit, cb_frc):
+                cb.configure(state="disabled" if hq else "normal")
+            if hq:
+                tab_vars["ten_bit"].set(False)
+                tab_vars["amf_frc"].set(False)
+            lbl_hq_not.configure(
+                text=("HQ büyütme açık: 10-bit ve kare katlama kullanılamaz "
+                      "(ölçüldü, birlikte kilitleniyor)." if hq else ""))
+
+        for sira, (metin, degisken, aciklama, komut) in enumerate([
+            ("HQ büyütme (AMD sr_amf)", tab_vars["amf_sr"],
+             "Donanımsal super-resolution. Yalnız çalışır.", on_hq_degisti),
+            ("10-bit kodla (vpp_amf)", tab_vars["ten_bit"],
+             "Bantlanmayı azaltır. Bu hatta 10-bit sadece böyle alınır.", None),
+            ("Kare hızını 2 katına çıkar", tab_vars["amf_frc"],
+             "Hareket interpolasyonu (30->60). Dosya büyür.", None),
+        ]):
+            hucre = ctk.CTkFrame(kafes, fg_color="transparent")
+            hucre.grid(row=0, column=sira, sticky="nsew", padx=4, pady=(4, 2))
+            cb = ctk.CTkCheckBox(hucre, text=metin, variable=degisken,
+                                 command=komut) if komut else \
+                 ctk.CTkCheckBox(hucre, text=metin, variable=degisken)
+            cb.pack(anchor="w")
+            ctk.CTkLabel(hucre, text=aciklama, font=("Arial", 10, "italic"),
+                         text_color="#8A8A8A", justify="left", anchor="w",
+                         height=16, wraplength=260).pack(anchor="w", padx=(26, 0), pady=(1, 0))
+            if sira == 1:
+                cb_10bit = cb
+            elif sira == 2:
+                cb_frc = cb
+        lbl_hq_not = ctk.CTkLabel(kart_salter, text="", font=("Arial", 10, "italic"),
+                                  text_color="#FFA500", anchor="w")
+        lbl_hq_not.pack(anchor="w", padx=15, pady=(0, 8))
+        ctk.CTkLabel(kart_salter,
+                     text="Bu sekmede altyazı gömme, renk filtresi ve taraklanma "
+                          "giderme YOKTUR: kare GPU'da kaldığı için bunların AMF "
+                          "karşılığı yok. Gerekiyorsa AV1/H.265/H.264 (AMD) "
+                          "sekmelerini kullanın. Seçtiğiniz çözünürlük kaynaktan "
+                          "büyükse burada BÜYÜTÜLÜR (büyütme koruması yok; HQ "
+                          "büyütme zaten bunun için).",
+                     font=("Arial", 10, "italic"), text_color="#8A8A8A",
+                     justify="left", anchor="w", wraplength=760).pack(anchor="w", padx=15, pady=(0, 10))
+
+        def on_kodek_degisti(secim):
+            kodek = secim.split("(")[1].split(")")[0]
+            tavani_uygula(kodek)
+            tab_vars["container"].set("mkv" if kodek == "av1_amf" else "mp4")
+            # Kodek degisince QP'yi o kodegin olculen bandina cek: olcekler
+            # birbirine cevrilemez (AV1'de 144 iyi kalite, H.265'te gecersiz).
+            self._auto_set_cq(kodek, tab_vars["scale"].get(), tab_vars, slider_cq,
+                              lbl_cq_title, lbl_cq_status, "QP (Kalite)")
+
+        on_kodek_degisti(tab_vars["selected_codec"].get())
+        on_hq_degisti()
+        self.cq_refreshers[tab_name] = on_cq_change
+
     def create_cuda_tab(self, tab_name):
         self.tabview.add(tab_name)
         frame = self.tabview.tab(tab_name)
@@ -2792,6 +3294,26 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             if not var_mi:
                 silinecek.extend(DONANIM[marka]["sekmeler"])
 
+        # ACILIS SEKMESI SILMEDEN ONCE SECILIR. Sebep OLCULDU: CTkTabview.set()
+        # 100 ms sonrasina "secili olmayanlari gizle" isi planliyor ve delete()
+        # silinen sekme SECILI ise kendiliginden set() cagiriyor. Once silip
+        # sonra secince iki set() ust uste biniyor; birincinin gecikmeli isi
+        # ikincinin cercevesini de gizliyor ve icerik alani BOS kaliyordu
+        # (iz kaydi: set('H.264 (AMD)') -> set('AV1 (AMD)') ->
+        #  forget_all(exclude='H.264 (AMD)') -> forget_all(exclude='AV1 (AMD)')).
+        # Silinmeyecek bir sekmeyi ONCE secince delete() hic set() cagirmaz ve
+        # geriye tek bir gecikmeli is kalir.
+        # Kullanicinin ayarlardan gelen sekme secimi hayattaysa ONA DOKUNMA:
+        # gereksiz bir set() ikinci bir gecikmeli is demek, ustelik secimi de
+        # ezerdi (olculdu: kayitli sekme H.264 iken AV1'e atliyordu).
+        kalacak = [ad for ad in self.tabs if ad not in silinecek]
+        if kalacak:
+            simdiki = self.tabview.get()
+            hedef = (simdiki if simdiki in kalacak else
+                     VARSAYILAN_SEKME if VARSAYILAN_SEKME in kalacak else kalacak[0])
+            if simdiki != hedef:
+                self.tabview.set(hedef)
+
         for ad in silinecek:
             if ad not in self.tabs:
                 continue
@@ -2808,11 +3330,32 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         if not bulunan:
             self.log("   ⚠️ Yalnızca CPU (VP9) ve altyazı modu kullanılabilir.")
 
-        # Acik sekme silinmis olabilir; kalan gecerli bir sekmeye gec.
+        # Secim yukarida, SILMEDEN ONCE yapildi. Burada yalnizca beklenmedik
+        # bir durumda (secili sekme yine de yok olduysa) toparlanir.
         kalan = [ad for ad in self.tabs]
         if kalan and self.tabview.get() not in self.tabs:
             self.tabview.set(kalan[0])
         self.on_tab_change()
+        # Gecikmeli isler bittikten sonra son bir kontrol (bkz. asagidaki not).
+        self.after(250, self._sekme_cercevesini_garantile)
+
+    def _sekme_cercevesini_garantile(self):
+        """
+        Secili sekmenin cercevesi ekranda degilse yeniden yerlestirir.
+
+        Neden gerekli: CTkTabview.set() 100 ms SONRASINA "secili olmayan
+        sekmeleri gizle" isi planliyor. Acilista birden fazla secim yapiliyor
+        (ayarlardan gelen sekme + donanim taramasindan sonraki duzeltme) ve
+        eski is, yeni secilen sekmenin cercevesini de gizleyebiliyor. Sonuc:
+        sekme seridi doluyken icerik alani BOS. Zamanlamayi CTk belirledigi
+        icin tek saglam yol, isler bittikten sonra sonuca BAKMAK.
+        """
+        try:
+            ad = self.tabview.get()
+            if ad in self.tabs and not self.tabview.tab(ad).winfo_ismapped():
+                self.tabview.set(ad)
+        except Exception:
+            pass
 
     def _refresh_all_cq_displays(self):
         """Ayarlar yuklendikten sonra CQ etiket/renklerini tazeler."""
@@ -2936,6 +3479,26 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             return (int(vals[0]), int(vals[1])) if len(vals) >= 2 else (0, 0)
         except Exception:
             return (0, 0)
+
+    def get_audio_bitrate(self, filepath):
+        """
+        Kaynagin ilk ses akisinin bitrate'i (kbps); okunamazsa None.
+
+        None YAYGIN ve normaldir: MKV gibi konteynerlerde akis basina bitrate
+        yazmayabilir. O durumda sinirlama yapilmaz (bkz. ses_bitrate_sinirla).
+        """
+        try:
+            sonuc = subprocess.run(
+                [FFPROBE_BIN, "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=bit_rate",
+                 "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            ham = (sonuc.stdout or "").strip().splitlines()
+            return round(int(ham[0]) / 1000) if ham and ham[0].isdigit() else None
+        except Exception:
+            return None
 
     def can_copy_audio(self, filepath, container):
         """
@@ -3066,6 +3629,13 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     def _settings_snapshot(self):
         """Kaydedilecek ayarlari toplar (ana thread)."""
         data = {
+            # Eski ayar dosyalarindaki 128k ses varsayilani bir KEZ "Kopyala"ya
+            # cevrilir; bu bayrak islemin tekrarlanmasini engeller (kullanici
+            # bilerek 128k'ya donmusse ikinci kez ezmeyelim).
+            "ses_varsayilani_kopyala_gocu": True,
+            # QP varsayilani bandin ALT ucundan UST ucuna gecti; kaydedilmis
+            # eski degerlerin yeni davranisi bir kez devralmasi icin bayrak.
+            "cq_ust_sinir_gocu": True,
             "aktif_sekme": self.tabview.get(),
             "son_video_klasoru": self.last_video_dir,
             "son_altyazi_klasoru": self.last_sub_dir,
@@ -3148,6 +3718,43 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 except Exception:
                     pass
 
+        # --- ESKI SES VARSAYILANI GOCU (bir kez) ---
+        # Ses varsayilani "128k yeniden kodla" idi ve kaydedilmis ayarlar bunu
+        # yeni varsayilanin (Kopyala) uzerine yaziyordu. O deger kullanicinin
+        # BILEREK sectigi bir sey degil, eski varsayilanin kalintisi: OLCULDU,
+        # 32 kbps'lik bir kaynakta sesi 19 MB'tan 72 MB'a cikariyor ve ciktiyi
+        # kaynaktan buyuk yapiyordu. Yalnizca tam olarak eski varsayilan
+        # duruyorsa degistirilir; baska bir deger secilmisse dokunulmaz.
+        if not data.get("ses_varsayilani_kopyala_gocu"):
+            gocen = []
+            for ad, tab_vars in self.tabs.items():
+                var = tab_vars.get("audio_bitrate")
+                if var is not None and var.get() == "128k":
+                    var.set(SES_KOPYALA)
+                    gocen.append(ad)
+            if gocen:
+                self.log(f"ℹ️ Ses ayarı {len(gocen)} sekmede 'Kopyala' yapıldı "
+                         "(eski varsayılan 128k idi; kaynaktan yüksek bitrate "
+                         "kaliteyi artırmaz, dosyayı büyütür). İstediğiniz "
+                         "sekmede geri değiştirebilirsiniz.")
+
+        # --- QP VARSAYILANI GOCU (bir kez) ---
+        # Varsayilan artik onerilen bandin UST ucu (en tutumlu, olculen VMAF
+        # ~90 noktasi). Kaydedilmis eski degerler bunu ezerdi. Restore edilen
+        # degeri "otomatik konmus" sayarak isaretliyoruz: boylece kaynak
+        # yuklenince deger yeni varsayilana oturur. Kullanici bundan SONRA
+        # elle bir deger secerse bir daha dokunulmaz (bkz. _update_cq_display).
+        if not data.get("cq_ust_sinir_gocu"):
+            for tab_vars in self.tabs.values():
+                if hasattr(tab_vars.get("cq"), "get"):
+                    try:
+                        tab_vars["cq_auto"] = int(float(tab_vars["cq"].get()))
+                    except Exception:
+                        pass
+            self.log("ℹ️ QP varsayılanı, önerilen bandın en tutumlu ucuna "
+                     "alındı (kaynağın çözünürlüğüne göre). Kadranı elle "
+                     "değiştirirseniz seçiminiz korunur.")
+
         aktif = data.get("aktif_sekme")
         if aktif in self.tabs:
             try:
@@ -3183,7 +3790,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             var = tab_vars.get(anahtar)
             return var.get() if hasattr(var, "get") else varsayilan
 
-        if is_pure_cuda:
+        # Kodlayicisini sekme icinden secturen sekmeler (SAF CUDA ve TAM GPU)
+        # "selected_codec" tasir; digerlerinde kodlayici sekmenin kendisidir.
+        if "selected_codec" in tab_vars:
             codec_v = tab_vars["selected_codec"].get().split("(")[1].split(")")[0]
         else:
             codec_v = tab_vars["codec"]
@@ -3197,7 +3806,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "input_file": input_file if input_file is not None else self.video_path.get(),
             "sub_file": sub_file if sub_file is not None else self.sub_path.get(),
             "container": tab_vars["container"].get(),
-            "a_bitrate": oku("audio_bitrate", "128k"),
+            "a_bitrate": oku("audio_bitrate", SES_KOPYALA),
             # Sadece-altyazi modunda CQ diye bir sey yok; "-" dosya adinda ve
             # kuyruk listesinde okunabilir bir yer tutucu olarak kalir.
             "cq_val": str(oku("cq", "-")),
@@ -3215,6 +3824,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "ten_bit": tab_vars["ten_bit"].get() if "ten_bit" in tab_vars else True,
             "interp_algo": tab_vars["interp_algo"].get() if "interp_algo" in tab_vars else "Otomatik",
             "amf_quality": oku("amf_quality", "quality"),
+            # TAM GPU sekmesine ozgu (digerlerinde bu degiskenler yok).
+            "amf_sr": tab_vars["amf_sr"].get() if "amf_sr" in tab_vars else False,
+            "amf_sr_algo": AMF_SR_ALGORITMALARI.get(oku("amf_sr_algo", ""), "4"),
+            "amf_frc": tab_vars["amf_frc"].get() if "amf_frc" in tab_vars else False,
             "output_dir": self.output_dir.get().strip(),
             "name_with_cq": self.name_with_cq.get(),
             "trim_start": self.trim_start.get(),
@@ -3268,9 +3881,14 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             kaynak = self.get_video_codec(cfg["input_file"])
             return "" if kaynak in D3D11VA_ISTEMEYEN_KODEKLER else "d3d11va"
 
-        if codec_v in AMF_CODECS:
+        if tab_vars.get("is_tamgpu"):
+            # Kopyasiz hat: cozucu de AMF olmak ZORUNDA. Olculdu, "-hwaccel
+            # d3d11va -hwaccel_output_format amf" birlesimi cokuyor.
+            cfg["hwaccel"] = "amf"
+            cfg["tam_gpu"] = True
+        elif codec_v in AMF_CODECS:
             cfg["hwaccel"] = amd_cozucu()
-            cfg["tam_gpu"] = cfg["hwaccel"] == "amf"
+            cfg["tam_gpu"] = False
         elif codec_v.endswith("_nvenc"):
             cfg["hwaccel"] = "cuda"
         elif self.donanim.get(NVIDIA):
@@ -3339,14 +3957,30 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         # AMD donanim kodlayicisi cok kucuk kareyi kabul etmiyor. Onlemezsek
         # kullanici yalnizca "encoder->Init() failed with error 5" goruyor.
+        #
+        # Sinir KODEGE GORE degisir (bkz. AMF_MIN_KARE): ayni kare H.265'te
+        # cokerken H.264 ve AV1'de sorunsuz kodlaniyor. Eskiden ucune de en
+        # kotu durum uygulandigi icin calisan sekmeler de engelleniyordu.
         if cfg["codec_v"] in AMF_CODECS and cfg.get("cikti_boyutu"):
             w, h = cfg["cikti_boyutu"]
-            if w and h and (w < AMF_MIN_GENISLIK or h < AMF_MIN_YUKSEKLIK):
-                # Tavsiye DURUMA GORE degisir. "Daha yuksek cozunurluk secin"
-                # demek tek basina cikmaz sokak: buyutme korumasi acikken
-                # secilen cozunurluk sessizce "Orijinal"e geri donuyor ve
-                # kullanici ayni hatayi tekrar aliyor.
-                if cfg.get("upscale_blocked"):
+            min_w, min_h = AMF_MIN_KARE[cfg["codec_v"]]
+            if w and h and (w < min_w or h < min_h):
+                sekme = AMF_SEKME_ADI[cfg["codec_v"]]
+                # Tavsiye DURUMA GORE degisir; hepsi ayni sirayla denenir.
+                calisan = amf_kabul_eden_sekmeler(w, h)
+                if calisan:
+                    # En iyi cikis yolu: kareyi oldugu gibi kabul eden bir
+                    # donanim sekmesi. Ne yeniden olcekleme, ne CPU'ya dusme.
+                    oneri = (f"Bu dosya {' ya da '.join(calisan)} sekmesinde "
+                             "OLDUĞU GİBİ dönüşür; çözünürlüğü değiştirmeniz "
+                             "gerekmez.\n\nBu sekmede kalmak isterseniz daha "
+                             "yüksek bir çözünürlük seçin ('Kaynaktan büyütme "
+                             "yapma' şalteri kapalı olmalı).")
+                elif cfg.get("upscale_blocked"):
+                    # "Daha yuksek cozunurluk secin" demek tek basina cikmaz
+                    # sokak: buyutme korumasi acikken secilen cozunurluk
+                    # sessizce "Orijinal"e donuyor ve kullanici ayni hatayi
+                    # tekrar aliyor.
                     oneri = ("Daha yüksek bir çözünürlük seçtiniz ama "
                              "'Kaynaktan büyütme yapma' şalteri açık olduğu için "
                              "uygulanmadı.\n\nO şalteri kapatın ya da bu dosyayı "
@@ -3356,10 +3990,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                              "'Kaynaktan büyütme yapma' şalterini de kapatmanız "
                              "gerekir.\n\nYa da bu dosyayı VP9 (CPU) sekmesiyle "
                              "dönüştürün; orada böyle bir sınır yok.")
-                return ("Görüntü AMD Kodlayıcı İçin Çok Küçük",
-                        f"Çıkacak kare {w}x{h}. AMD donanım kodlayıcısı en az "
-                        f"{AMF_MIN_GENISLIK}x{AMF_MIN_YUKSEKLIK} ister ve bunun "
-                        f"altında hata verip durur.\n\n{oneri}")
+                return (f"Görüntü {sekme} İçin Çok Küçük",
+                        f"Çıkacak kare {w}x{h}. {sekme} kodlayıcısı en az "
+                        f"{min_w}x{min_h} ister ve bunun altında hata verip "
+                        f"durur.\n\n{oneri}")
 
         if cfg["is_remux"]:
             if not cfg["sub_file"]:
@@ -3499,6 +4133,85 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             self.job_queue.pop(0)
             self._refresh_queue_view()
 
+    def _kaynak_akis_dokumu(self, kaynak):
+        """
+        Kaynagin akis yapisini kisa bicimde dondurur (hata dokumu icin).
+        Okunamazsa aciklayici bir satir dondurur; hata yolunu ASLA patlatmaz.
+        """
+        try:
+            sonuc = subprocess.run(
+                [FFPROBE_BIN, "-v", "error", "-show_entries",
+                 "stream=index,codec_type,codec_name,profile,width,height,pix_fmt,"
+                 "r_frame_rate,sample_rate,channels,channel_layout:"
+                 "format=format_name,duration,bit_rate",
+                 "-of", "default=noprint_wrappers=1", kaynak],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30,
+                encoding="utf-8", errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            return (sonuc.stdout or "").strip() or (sonuc.stderr or "").strip() or "(bos)"
+        except Exception as e:
+            return f"(okunamadi: {e})"
+
+    def _hata_logu_yaz(self, cfg, cmd, cikis_kodu, bozuk_ad=None):
+        """
+        Basarisiz isin dokumunu ciktinin yanina ".hata.log" olarak yazar ve
+        yolu dondurur (hicbir yere yazilamazsa None).
+
+        Neden dosya: hata penceresi "log ekranina bakin" diyor ama o kutu 3
+        satir gosteriyor ve salt-okunur oldugu icin metni kopyalamak zor.
+        Hatayi cozmek icin gereken her sey (komut, cikis kodu, ffmpeg'in son
+        satirlari, is ayarlari, kaynagin akis yapisi) tek dosyada olmazsa
+        kullanicidan parca parca ekran goruntusu istemek gerekiyor.
+
+        Yazma HATA YOLUNDA calisiyor: burada cikan bir istisna asil hatayi
+        gizlerdi, o yuzden her sey try icinde ve basarisizlik sessiz.
+        """
+        satirlar = [
+            "=" * 70,
+            f"NvidiaConvertor hata dokumu - {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            "=" * 70,
+            f"Cikis kodu   : {cikis_kodu}",
+            f"Sekme        : {cfg.get('tab_name')}",
+            f"Kodlayici    : {cfg.get('codec_v')}    CQ/QP: {cfg.get('cq_val')}",
+            f"Olcek        : {cfg.get('scale')}    Cikacak kare: {cfg.get('cikti_boyutu')}",
+            f"Cozucu       : hwaccel={cfg.get('hwaccel') or '-'}  tam_gpu={bool(cfg.get('tam_gpu'))}",
+            f"Konteyner    : {cfg.get('container')}    10-bit: {cfg.get('ten_bit')}",
+            f"Ses          : {cfg.get('codec_a')}  bitrate={cfg.get('a_bitrate')}  kopyala={cfg.get('copy_audio')}",
+            f"Altyazi      : {cfg.get('sub_file') or '-'}",
+            f"Kaynak       : {cfg.get('input_file')}",
+            f"Cikti        : {cfg.get('output_file')}",
+            f"Yarim dosya  : {bozuk_ad or '-'}",
+            f"ffmpeg       : {FFMPEG_BIN}",
+            "",
+            "--- CALISTIRILAN KOMUT " + "-" * 47,
+            komut_metni(cmd),
+            "",
+            "--- KAYNAGIN AKIS YAPISI (ffprobe) " + "-" * 35,
+            self._kaynak_akis_dokumu(cfg.get("input_file") or ""),
+            "",
+            "--- FFMPEG'IN SON CIKTISI " + "-" * 44,
+        ]
+        satirlar.extend(self._ffmpeg_tail)
+        metin = "\n".join(satirlar) + "\n"
+
+        # Once ciktinin yanina; orasi yazilamazsa (salt-okunur klasor, USB
+        # cikarilmis vb.) hatayi kaybetmemek icin TEMP'e dus.
+        temel = cfg.get("output_file") or ""
+        adaylar = []
+        if temel:
+            adaylar.append(temel + ".hata.log")
+        adaylar.append(os.path.join(tempfile.gettempdir(),
+                                    "NvidiaConvertor_hata.log"))
+        for yol in adaylar:
+            try:
+                with open(yol, "w", encoding="utf-8") as f:
+                    f.write(metin)
+                return yol
+            except Exception:
+                continue
+        return None
+
     def _mark_broken_output(self, output_file):
         """
         Basarisiz bir isin geride biraktigi yarim/bos dosyayi ".bozuk" ekiyle
@@ -3588,6 +4301,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 "sub_needs_transcode": sub_cevrim,
                 "audio_copy_ok": (self.can_copy_audio(input_file, container)
                                   if cfg["copy_audio"] and not is_remux else False),
+                # "Kopyala" secili olsa da olculur: kopyalama basarisiz olursa
+                # devreye giren yedek bitrate de kaynagi asmamali.
+                "audio_bitrate": (None if is_remux
+                                  else self.get_audio_bitrate(input_file)),
             }
 
             cmd, notes = build_command(cfg, probes)
@@ -3706,9 +4423,22 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 self._thread_safe_log("=" * 60)
 
                 bozuk_ad = self._mark_broken_output(output_file)
+
+                # Log kutusu 3 satir gosteriyor ve kopyalanamiyor; hatayi
+                # cozebilmek icin gereken her sey dosyaya da yazilir.
+                log_yolu = self._hata_logu_yaz(cfg, cmd,
+                                               self.current_process.returncode,
+                                               bozuk_ad)
+                if log_yolu:
+                    self._thread_safe_log(f"📄 Hata dökümü yazıldı: {log_yolu}")
+
                 ek_mesaj = ""
                 if bozuk_ad:
                     ek_mesaj = f"\n\nYarım kalan çıktı şu adla işaretlendi:\n{os.path.basename(bozuk_ad)}"
+                if log_yolu:
+                    ek_mesaj += ("\n\nHatanın tam dökümü şu dosyaya yazıldı "
+                                 "(komut, ffmpeg çıktısı ve kaynağın akış "
+                                 f"yapısı dahil):\n{log_yolu}")
                 self.after(0, messagebox.showerror, "Hata",
                            "FFmpeg bir hata döndürdü. Detaylar için siyah log ekranına bakın." + ek_mesaj)
 

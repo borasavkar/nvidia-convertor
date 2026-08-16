@@ -379,10 +379,10 @@ def test_av1_amf_qp_olcegi_255():
 
 @pytest.mark.parametrize("codec", ["hevc_amf", "h264_amf", "av1_amf"])
 @pytest.mark.parametrize("scale", ["240p", "360p", "480p", "720p", "1080p", "1440p", "4K"])
-def test_amd_varsayilan_qp_araligin_ALT_SINIRI(codec, scale):
-    """Sekme, onerilen bandin en yuksek kalite ucunda acilir."""
+def test_amd_varsayilan_qp_araligin_UST_SINIRI(codec, scale):
+    """Sekme, onerilen bandin en tutumlu ucunda acilir (bkz. get_cq_default)."""
     lo, hi = nv.get_cq_range(codec, scale)
-    assert nv.get_cq_default(codec, scale) == lo
+    assert nv.get_cq_default(codec, scale) == hi
 
 
 @pytest.mark.parametrize("codec", ["hevc_amf", "h264_amf", "av1_amf"])
@@ -406,15 +406,249 @@ def test_amd_tablolari_nvenc_tablosundan_KOPYA_DEGIL():
 
 def test_amf_minimum_kare_uygulama_secenekleriyle_uyumlu():
     """
-    Olculdu: hevc_amf 352 genislikte cokuyor, 384'te calisiyor; hevc/av1 96
-    yukseklikte cokuyor, 128'de calisiyor. Uygulamanin EN KUCUK olcekleme
-    secenegi (240p = 426x240) bu sinirlarin ustunde olmali, yoksa kullanici
-    listeden secebildigi bir cozunurlukte "Init() failed error 5" alir.
+    Uygulamanin EN KUCUK olcekleme secenegi (240p = 426x240) her AMD kodeginin
+    sinirinin ustunde olmali, yoksa kullanici listeden secebildigi bir
+    cozunurlukte "Init() failed error 5" alir.
     """
     en_kucuk = min(nv.SCALE_MAP.values())          # 240p -> 426
-    assert en_kucuk >= nv.AMF_MIN_GENISLIK
-    # 240p'nin 16:9 kisa kenari da sinirin ustunde mi?
-    assert round(en_kucuk * 9 / 16) >= nv.AMF_MIN_YUKSEKLIK
+    for kodek, (min_w, min_h) in nv.AMF_MIN_KARE.items():
+        assert en_kucuk >= min_w, kodek
+        # 240p'nin 16:9 kisa kenari da sinirin ustunde mi?
+        assert round(en_kucuk * 9 / 16) >= min_h, kodek
+
+
+def test_amf_minimum_kare_kodege_gore_AYRI():
+    """
+    Olculdu (RX 9070 XT, ffmpeg 9.0.1, 2 piksellik adimlarla tarandi):
+    h264 96x32, av1 320x128, hevc 384x128. Uc kodege tek bir "en kotu durum"
+    degeri uygulanirsa h264/av1'in SORUNSUZ kodladigi dosyalar engellenir --
+    kusur tam olarak buydu: 320x240 bir kaynakta uc AMD sekmesi de "cok kucuk"
+    diyordu, oysa yalnizca H.265 cokuyor.
+    """
+    assert nv.AMF_MIN_KARE["h264_amf"] == (96, 32)
+    assert nv.AMF_MIN_KARE["av1_amf"] == (320, 128)
+    assert nv.AMF_MIN_KARE["hevc_amf"] == (384, 128)
+    # Tablo AMF_CODECS ile ayni kumeyi kapsamali; eksik anahtar KeyError verir.
+    assert set(nv.AMF_MIN_KARE) == set(nv.AMF_CODECS) == set(nv.AMF_SEKME_ADI)
+
+
+def test_amf_kabul_eden_sekmeler_olculen_sinirlara_uyuyor():
+    """Kullanicinin gercek dosyasi (320x240) H.264 ve AV1'de kodlanabiliyor."""
+    assert nv.amf_kabul_eden_sekmeler(320, 240) == ["AV1 (AMD)", "H.264 (AMD)"]
+    assert nv.amf_kabul_eden_sekmeler(384, 240) == ["AV1 (AMD)", "H.265 (AMD)",
+                                                    "H.264 (AMD)"]
+    # Dikey video: 240p'de genislik 240 kalir, yalnizca h264 kabul eder.
+    assert nv.amf_kabul_eden_sekmeler(240, 426) == ["H.264 (AMD)"]
+    # h264'un de altinda kalan kare: hicbir donanim sekmesi kodlayamaz.
+    assert nv.amf_kabul_eden_sekmeler(64, 32) == []
+
+
+def tamgpu_cfg(**kw):
+    """TAM GPU sekmesinin urettigi is tanimi."""
+    base = amd_cfg(tam_gpu=True, hwaccel="amf", tab_name=nv.TAMGPU_SEKME,
+                   scale="Orijinal", cikti_boyutu=(1920, 1080), ten_bit=False,
+                   amf_sr=False, amf_sr_algo="4", amf_frc=False)
+    base.update(kw)
+    return base
+
+
+def test_tamgpu_hedef_boyut():
+    assert nv.tamgpu_hedef_boyut(tamgpu_cfg(scale="Orijinal")) is None
+    # AMF filtreleri ifade kabul etmiyor: iki boyut da acikca hesaplanmali
+    assert nv.tamgpu_hedef_boyut(tamgpu_cfg(scale="720p")) == (1280, 720)
+    # Dikey kaynak: uzun kenar yukseklige gider
+    assert nv.tamgpu_hedef_boyut(
+        tamgpu_cfg(scale="720p", cikti_boyutu=(1080, 1920))) == (720, 1280)
+    # 4:3 kaynak
+    assert nv.tamgpu_hedef_boyut(
+        tamgpu_cfg(scale="720p", cikti_boyutu=(640, 480))) == (1280, 960)
+
+
+def test_tamgpu_10bit_AYNI_vpp_filtresinde():
+    """
+    Olculdu: zincire ikinci bir AMF filtresi eklemek kararsizlastiriyor.
+    10-bit bu yuzden olcekleme filtresinin ICINDE istenir; ayri bir
+    vpp_amf=format eklenirse HQ buyutmeyle birlesince ffmpeg kilitleniyor.
+    """
+    vf, _ = nv.build_filters(tamgpu_cfg(scale="720p", ten_bit=True), probes())
+    assert len(vf) == 1 and vf[0].startswith("vpp_amf=")
+    assert "format=p010" in vf[0] and "w=1280:h=720" in vf[0]
+
+
+def test_tamgpu_frc_ikinci_filtre_olarak_eklenir():
+    vf, notes = nv.build_filters(
+        tamgpu_cfg(scale="720p", ten_bit=True, amf_frc=True), probes())
+    assert vf == ["vpp_amf=w=1280:h=720:scale_type=bicubic:format=p010", "frc_amf"]
+    assert any("İKİ KATINA" in n for n in notes)
+
+
+def test_tamgpu_HQ_buyutme_YALNIZ_calisir():
+    """
+    Olculdu (6'sar kosu): sr_amf tek basina 6/6 saglam; frc_amf ya da
+    vpp_amf(format) ile birlesince 5/6; ucu bir arada ffmpeg KILITLENIYOR.
+    Bu yuzden HQ acikken digerleri komuta GIRMEMELI.
+    """
+    vf, notes = nv.build_filters(
+        tamgpu_cfg(scale="720p", amf_sr=True, ten_bit=True, amf_frc=True), probes())
+    assert vf == ["sr_amf=w=1280:h=720:algorithm=4"]
+    assert not any("vpp_amf" in f or "frc_amf" in f for f in vf)
+    assert any("HQ büyütme" in n and "ATLANDI" in n for n in notes)
+
+
+def test_tamgpu_renk_etiketi_yazilabiliyor():
+    """setparams kareye dokunmaz (metadata), AMF yuzeyini bozmuyor - olculdu."""
+    vf, _ = nv.build_filters(tamgpu_cfg(), probes(renk_etiketsiz=True))
+    assert any(f.startswith("setparams=") for f in vf)
+
+
+def test_tamgpu_yapamadiklarini_SOYLUYOR():
+    vf, notes = nv.build_filters(tamgpu_cfg(sub_file=r"C:\a.srt", use_bwdif=True),
+                                 probes())
+    assert not any("subtitles" in f or "bwdif" in f for f in vf)
+    assert any("altyazı gömme" in n for n in notes)
+
+
+def test_tamgpu_kendi_sekmesinde_cozucu_listesinde_DEGIL():
+    """
+    Kusur: TAM GPU bir "kod cozucu" secenegiyken secildiginde altyazi/renk/
+    taraklanma SESSIZCE atlaniyordu. Artik kendi sekmesinde ve o sekmede bu
+    secenekler hic gosterilmiyor.
+    """
+    assert not any("TAM GPU" in ad for ad in nv.COZUCU_SECENEKLERI)
+    assert nv.TAMGPU_SEKME in nv.DONANIM[nv.AMD]["sekmeler"]
+
+
+def test_ses_varsayilani_KOPYALA():
+    """
+    Olculdu (1.mp4, 83 dk): 32 kbps AAC kaynak 128 kbps Opus'a kodlanınca ses
+    19 MB -> 72 MB oldu ve cikti kaynaktan BUYUK cikti; video tarafi ise
+    77.5 -> 70.2 MB ile kuculmustu. Varsayilan yeniden kodlama olmamali.
+    """
+    assert nv.FFmpegStudioPro.AUDIO_VALUES[0] == nv.SES_KOPYALA
+    assert nv.SES_KOPYALA.startswith("Kopyala")   # collect_config bunu boyle anliyor
+
+
+def test_ses_bitrate_kaynagi_asmiyor():
+    """Hedef, kaynagin USTUNDEKI ilk adimi asamaz; bir kademe pay kalir."""
+    # Kullanicinin gercek dosyasi: 32 kbps kaynak, 128k secili -> 64k
+    deger, not_ = nv.ses_bitrate_sinirla("128k", 32)
+    assert deger == "64k" and "32 kbps" in not_
+    # Kaynak zaten yuksekse secime dokunulmaz
+    assert nv.ses_bitrate_sinirla("128k", 128) == ("128k", None)
+    assert nv.ses_bitrate_sinirla("128k", 190) == ("128k", None)
+    # Kullanici zaten dusuk sectiyse YUKSELTILMEZ
+    assert nv.ses_bitrate_sinirla("64k", 320) == ("64k", None)
+    # Kaynak okunamadi (MKV'lerde yaygin): dokunma
+    assert nv.ses_bitrate_sinirla("128k", None) == ("128k", None)
+    # "Kopyala" gibi sayiya cevrilemeyen deger: dokunma
+    assert nv.ses_bitrate_sinirla(nv.SES_KOPYALA, 32) == (nv.SES_KOPYALA, None)
+
+
+def test_komutta_ses_bitrate_sinirlaniyor():
+    cmd, notes = nv.build_command(amd_cfg(a_bitrate="128k", copy_audio=False),
+                                  probes(audio_bitrate=32))
+    assert cmd[cmd.index("-b:a") + 1] == "64k"
+    assert any("kaybolmuş kaliteyi" in n.lower() or "kaybolmuş" in n for n in notes)
+    # Kaynak bilinmiyorsa secim aynen gecer
+    cmd, _ = nv.build_command(amd_cfg(a_bitrate="128k", copy_audio=False), probes())
+    assert cmd[cmd.index("-b:a") + 1] == "128k"
+
+
+def test_hata_logu_dosyaya_yazilir(tmp_path):
+    """
+    Hata dokumu YALNIZCA is coktugunde calisir, yani normal kullanimda hic
+    denenmez ve sessizce bozulabilir. En kritik iki parca komut ile ffmpeg'in
+    son ciktisi: ikisi de yoksa dosyanin varligi bir ise yaramaz.
+    """
+    app = nv.FFmpegStudioPro.__new__(nv.FFmpegStudioPro)   # arayuz kurulmaz
+    app._ffmpeg_tail = ["[hevc_amf] encoder->Init() failed with error 5",
+                        "Conversion failed!"]
+    cikti = tmp_path / "deneme.mkv"
+    c = amd_cfg(input_file=str(tmp_path / "kaynak.mkv"), output_file=str(cikti))
+    yol = app._hata_logu_yaz(c, ["ffmpeg", "-i", "kaynak.mkv", "cikti.mkv"], 1,
+                             str(cikti) + ".bozuk")
+
+    assert yol == str(cikti) + ".hata.log"
+    metin = open(yol, encoding="utf-8").read()
+    assert "Cikis kodu   : 1" in metin
+    assert "hevc_amf" in metin                     # is ayarlari
+    assert "-i kaynak.mkv" in metin                # calistirilan komut
+    assert "Init() failed with error 5" in metin   # ffmpeg'in son ciktisi
+    assert "Conversion failed!" in metin
+
+
+def test_hata_logu_yazilamayan_klasorde_TEMP_e_duser(tmp_path):
+    """Cikti klasoru yazilamazsa hatayi kaybetmektense TEMP'e yazilmali."""
+    app = nv.FFmpegStudioPro.__new__(nv.FFmpegStudioPro)
+    app._ffmpeg_tail = ["bir hata"]
+    olmayan = tmp_path / "yok" / "olmayan_klasor" / "cikti.mkv"
+    yol = app._hata_logu_yaz(amd_cfg(output_file=str(olmayan)), ["ffmpeg"], 1)
+    assert yol and os.path.isdir(os.path.dirname(yol))
+    assert "bir hata" in open(yol, encoding="utf-8").read()
+
+
+def _sorun(**kw):
+    """_job_sorunu'yu arayuz olmadan cagirir (fonksiyon self kullanmiyor)."""
+    c = amd_cfg(input_file=os.path.abspath(__file__), output_dir="",
+                is_remux=False, trim_start="", trim_end="", **kw)
+    return nv.FFmpegStudioPro._job_sorunu(None, c)
+
+
+def test_kucuk_kare_calisan_sekmede_ENGELLENMEZ():
+    """Ana kusur: 320x240 kaynak h264/av1'de calisirken de engelleniyordu."""
+    assert _sorun(codec_v="h264_amf", cikti_boyutu=(320, 240)) is None
+    assert _sorun(codec_v="av1_amf", cikti_boyutu=(320, 240)) is None
+    # h264'un kendi sinirinin altinda ise yine engellenir.
+    assert _sorun(codec_v="h264_amf", cikti_boyutu=(64, 240)) is not None
+
+
+def test_kucuk_kare_uyarisi_CALISAN_SEKMEYI_onerir():
+    """
+    Uyari cikmak zorundaysa (H.265, 320x240) tavsiye ise yarar olmali:
+    kullaniciyi VP9'a (CPU, kat kat yavas) yollamadan once kareyi oldugu gibi
+    kabul eden donanim sekmelerini soylemeli.
+    """
+    baslik, metin = _sorun(codec_v="hevc_amf", cikti_boyutu=(320, 240))
+    assert "H.265 (AMD)" in baslik
+    assert "320x240" in metin and "384x128" in metin
+    assert "AV1 (AMD)" in metin and "H.264 (AMD)" in metin
+    assert "VP9" not in metin          # calisan donanim yolu varken gereksiz
+
+
+def test_hicbir_amd_sekmesi_kodlayamiyorsa_VP9_onerilir():
+    """h264'un de altindaki kare: tek cikis CPU (VP9) ya da buyutme."""
+    _, metin = _sorun(codec_v="hevc_amf", cikti_boyutu=(64, 32))
+    assert "VP9" in metin
+
+
+def test_orijinal_secilince_band_KAYNAGIN_cozunurlugunden_gelir():
+    """
+    Kusur: "Orijinal" tabloda bir satir adi degil, o yuzden dogrudan "default"
+    (1080p turevi) satira dusuluyordu. 4K bir kaynakta bu sessizce yanlis
+    tavsiye uretiyordu -- av1_amf'te olculen 4K bandi 70-104 iken sekme
+    144'te aciliyor ve 144, gercek 4K icerikte VMAF 90'in ALTINA denk geliyor.
+    """
+    assert nv.get_cq_range("av1_amf", "Orijinal") == (144, 160)          # kaynak bilinmiyor
+    assert nv.get_cq_range("av1_amf", "Orijinal", (3840, 2160)) == (70, 104)
+    assert nv.get_cq_default("av1_amf", "Orijinal", (3840, 2160)) == 104
+    # Kucuk kaynak da dogru bandi almali (kullanicinin 320x240 dosyasi).
+    assert nv.get_cq_range("av1_amf", "Orijinal", (320, 240)) == (115, 136)
+    # Acikca bir olcek secildiyse kaynak boyutu KARISMAZ.
+    assert nv.get_cq_range("av1_amf", "1080p", (3840, 2160)) == (144, 160)
+
+
+def test_cozunurluk_bandi_en_yakin_satiri_secer():
+    assert nv.cozunurluk_bandi(3840, 2160) == "4K"
+    assert nv.cozunurluk_bandi(1920, 1080) == "1080p"
+    assert nv.cozunurluk_bandi(2160, 3840) == "4K"        # dikey video
+    assert nv.cozunurluk_bandi(320, 240) == "240p"        # en kucuk satirin altinda
+    assert nv.cozunurluk_bandi(7680, 4320) == "4K"        # olcum yok: en yakin satir
+    assert nv.cozunurluk_bandi(3500, 1970) == "4K"        # 1440p'den cok 4K'ya yakin
+    assert nv.cozunurluk_bandi(0, 0) is None              # okunamadi
+    # Tablodaki her satirin karsiligi CQ_RANGES'te GERCEKTEN olmali.
+    for ad in nv.SCALE_MAP:
+        for kodek in nv.CQ_RANGES:
+            assert ad in nv.CQ_RANGES[kodek], (kodek, ad)
 
 
 def test_amd_dusuk_cozunurlukte_qp_araligi_dusuyor():
@@ -652,14 +886,15 @@ def test_temporal_aq_kapatilabilir():
 # ---------------------------------------------------------------- CQ tablolari
 @pytest.mark.parametrize("codec", ["av1_nvenc", "hevc_nvenc", "h264_nvenc", "libvpx-vp9"])
 @pytest.mark.parametrize("scale", ["240p", "360p", "480p", "720p", "1080p", "1440p", "4K"])
-def test_varsayilan_cq_onerilen_araligin_ALT_SINIRI(codec, scale):
+def test_varsayilan_cq_onerilen_araligin_UST_SINIRI(codec, scale):
     """
-    Sekme acildiginda kullanici onerilen bandin EN IYI kalite noktasinda
-    baslar. Ortadan baslamak arsiv icin dusuk kaliyordu: gercek 4K bir
-    kaynakta ortadaki deger VMAF 80.7 uretti (hedef band 90-96).
+    Sekme, onerilen bandin UST ucunda acilir: olculen VMAF ~90 noktasi, yani
+    "gorunur kayip baslamadan onceki en kucuk dosya". Alt uc (VMAF ~96) arsiv
+    icin dogruydu ama dosyalari gereksiz buyutuyordu; band DISINA cikilmiyor,
+    iki uc de olculmus degerler.
     """
     lo, hi = nv.get_cq_range(codec, scale)
-    assert nv.get_cq_default(codec, scale) == lo
+    assert nv.get_cq_default(codec, scale) == hi
     assert lo < hi                       # aralik gercekten bir aralik olsun
 
 
