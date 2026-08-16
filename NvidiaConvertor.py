@@ -21,7 +21,7 @@ from collections import deque
 # Zaman damgasi exe'nin kendi dosya tarihinden okunur; boylece surum
 # numarasini artirmayi unutsam bile hangi derlemenin calistigi kesin
 # anlasilir - bu, "yeni exe'yi mi calistiriyorum?" sorusunu bitirir.
-SURUM = "1.3.0"
+SURUM = "1.3.1"
 
 
 def surum_metni():
@@ -2808,6 +2808,13 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             # birbirine cevrilemez (AV1'de 144 iyi kalite, H.265'te gecersiz).
             self._auto_set_cq(kodek, tab_vars["scale"].get(), tab_vars, slider_cq,
                               lbl_cq_title, lbl_cq_status, "QP (Kalite)")
+
+        # KART EKRANA BURADA YERLESIYOR. create_card yalnizca kartI URETIR,
+        # yerlestirmez; bu satir unutuldugu icin sekmedeki UC SALTER de (HQ
+        # buyutme, kare katlama, B-kare) hic gorunmuyordu. Sekme kurulumunu
+        # "cfg dogru uretiliyor mu" diye dogrulamak yetmiyor - widget'in
+        # gercekten ekranda olup olmadigina bakilmali (winfo_ismapped).
+        kart_salter.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(10, 0))
 
         on_kodek_degisti(tab_vars["selected_codec"].get())
         on_hq_degisti()
