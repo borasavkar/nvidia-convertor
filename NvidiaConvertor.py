@@ -14,6 +14,27 @@ from collections import deque
 
 # Ayarlar kullanicinin profilinde tutulur; program klasoru salt-okunur olabilir
 # (Program Files) ve tasinabilir kurulumda da bu yol calisir.
+# =======================================================
+# SURUM
+# =======================================================
+# Elle artirilan surum + (derlenmis exe'de) OTOMATIK derleme zamani.
+# Zaman damgasi exe'nin kendi dosya tarihinden okunur; boylece surum
+# numarasini artirmayi unutsam bile hangi derlemenin calistigi kesin
+# anlasilir - bu, "yeni exe'yi mi calistiriyorum?" sorusunu bitirir.
+SURUM = "1.1.0"
+
+
+def surum_metni():
+    """Baslikta ve logda gosterilecek surum bilgisi."""
+    if getattr(sys, "frozen", False):
+        try:
+            zaman = time.localtime(os.path.getmtime(sys.executable))
+            return f"v{SURUM} · derleme {time.strftime('%d.%m.%Y %H:%M', zaman)}"
+        except Exception:
+            pass
+    return f"v{SURUM} · kaynaktan çalışıyor"
+
+
 SETTINGS_PATH = os.path.join(
     os.environ.get("APPDATA") or os.path.expanduser("~"),
     "NvidiaConvertor", "settings.json"
@@ -1498,7 +1519,7 @@ def escape_filter_path(path):
 class FFmpegStudioPro(ctk.CTk, _DndBase):
     def __init__(self):
         super().__init__()
-        self.title("Nvidia Cuda Video Convertor - Ultimate Edition")
+        self.title(f"Nvidia Cuda Video Convertor - Ultimate Edition   {surum_metni()}")
         # Konum da belirtilir: Tk'nin varsayilan yerlesimi pencereyi ekranin
         # ortasina koyup altini gorev cubugunun altinda birakiyordu.
         _gen, _yuk = 900, self._uygun_yukseklik(1300)
@@ -1795,6 +1816,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
 
         # FFmpeg durumu: ayarlardaki klasör yüklendikten SONRA karara bağlanır.
         # Bulunamazsa kullanıcıya doğrudan klasör seçme seçeneği sunulur.
+        # Hangi derlemenin calistigi logda da dursun: kullanici exe'yi
+        # guncelledigini buradan da dogrulayabilir.
+        self.log(f"🏷️ {surum_metni()}")
         self.check_ffmpeg()
 
         # Donanım taraması EN SON: doğru ffmpeg ikilisi belli olduktan sonra
@@ -4196,7 +4220,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         """
         satirlar = [
             "=" * 70,
-            f"NvidiaConvertor hata dokumu - {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"NvidiaConvertor {surum_metni()}",
+            f"hata dokumu - {time.strftime('%Y-%m-%d %H:%M:%S')}",
             "=" * 70,
             f"Cikis kodu   : {cikis_kodu}",
             f"Sekme        : {cfg.get('tab_name')}",
