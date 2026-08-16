@@ -729,6 +729,21 @@ def test_amd_level_ALMAZ():
         assert "-level:v" not in cmd and "-level" not in cmd, codec
 
 
+def test_amd_B_KARE_kullaniyor():
+    """
+    Olculen EN BUYUK kazanc bu. Esit dosya boyutunda karsilastirildi
+    (gercek icerik, 20 sn, 640x480 kayipsiz referans):
+        h264_amf  bf=3 390 KB -> VMAF 82.96 | temel 392 KB -> 78.30  (+4.7)
+        av1_amf   bf=3 347 KB -> VMAF 84.12 | temel 344 KB -> 82.53  (+1.5)
+    bf=2 ikisinde de daha kotu. hevc_amf'te secenek YOK.
+    """
+    for kodek in ("h264_amf", "av1_amf"):
+        cmd, _ = nv.build_command(amd_cfg(codec_v=kodek), probes())
+        assert cmd[cmd.index("-bf") + 1] == nv.AMF_B_KARE, kodek
+    cmd, _ = nv.build_command(amd_cfg(codec_v="hevc_amf"), probes())
+    assert "-bf" not in cmd          # kodlayici B-kare sunmuyor
+
+
 def test_amd_nvenc_bayraklarini_kullanmaz():
     """NVENC'e ozgu bayraklar AMF'de karsiliksiz; komuta sizmamali."""
     cmd, _ = nv.build_command(
