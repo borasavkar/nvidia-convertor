@@ -3,9 +3,9 @@
 # ============================================================
 # Tercih edilen yol: spec dosyasi (ayarlar orada, tek kaynak)
 #
-#   pyinstaller --noconfirm NvidiaConvertor.spec
+#   pyinstaller --noconfirm VidForge.spec
 #
-# NvidiaConvertor.spec icindeki ONEDIR degiskeni:
+# VidForge.spec icindeki ONEDIR degiskeni:
 #   True  -> klasor cikti  (TASINABILIR dagitim icin onerilen)
 #   False -> tek dosya exe (her acilista icerigi temp'e acar)
 #
@@ -18,7 +18,7 @@
 # uzerine yazar ve oradaki ayarlar kaybolur):
 #
 # Klasor cikti (tasinabilir):
-#   pyinstaller --noconfirm --onedir --windowed --name NvidiaConvertor --icon "icon.ico" --add-data "icon.ico;." --collect-all customtkinter --collect-all tkinterdnd2 NvidiaConvertor.py
+#   pyinstaller --noconfirm --onedir --windowed --name VidForge --icon "icon.ico" --add-data "icon.ico;." --collect-all customtkinter --collect-all tkinterdnd2 VidForge.py
 #
 # Tek dosya:
-#   pyinstaller --noconfirm --onefile --windowed --icon "icon.ico" --add-data "icon.ico;." --collect-all customtkinter --collect-all tkinterdnd2 NvidiaConvertor.py
+#   pyinstaller --noconfirm --onefile --windowed --icon "icon.ico" --add-data "icon.ico;." --collect-all customtkinter --collect-all tkinterdnd2 VidForge.py

@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# Derleme:  pyinstaller --noconfirm NvidiaConvertor.spec
+# Derleme:  pyinstaller --noconfirm VidForge.spec
 #
-# DIKKAT: "pyinstaller ... NvidiaConvertor.py" seklinde CLI bayraklariyla
+# DIKKAT: "pyinstaller ... VidForge.py" seklinde CLI bayraklariyla
 # derlemek bu dosyanin UZERINE YAZAR ve buradaki ayarlar kaybolur.
 # Ayar degistirmek icin bu dosyayi duzenleyip yukaridaki komutu kullanin.
 #
@@ -61,7 +61,7 @@ except Exception as _hata:                                    # pragma: no cover
     print('spec: Tcl 9 cikarma atlandi (%s)' % _hata)
 
 a = Analysis(
-    ['NvidiaConvertor.py'],
+    ['VidForge.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -76,7 +76,7 @@ a = Analysis(
 pyz = PYZ(a.pure)
 
 ortak = dict(
-    name='NvidiaConvertor',
+    name='VidForge',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -95,7 +95,7 @@ ortak = dict(
 if ONEDIR:
     exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **ortak)
     coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False,
-                   upx_exclude=[], name='NvidiaConvertor')
+                   upx_exclude=[], name='VidForge')
 else:
     exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
               runtime_tmpdir=None, upx_exclude=[], **ortak)

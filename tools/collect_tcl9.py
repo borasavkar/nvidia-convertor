@@ -13,7 +13,7 @@ Sonuc: uretilen exe acilirken calisma zamani kancasi
 ile cokuyor.
 
 COZUM: Tcl'in kendi dosya komutlariyla bu klasorleri zipfs'ten diske cikarip
-PyInstaller'a normal veri klasoru olarak veriyoruz (bkz. NvidiaConvertor.spec).
+PyInstaller'a normal veri klasoru olarak veriyoruz (bkz. VidForge.spec).
 
 Kullanim (spec bunu otomatik cagirir):
     python tools/collect_tcl9.py [hedef_klasor]
