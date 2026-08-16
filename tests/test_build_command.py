@@ -467,21 +467,24 @@ def test_tamgpu_hedef_boyut():
         tamgpu_cfg(scale="720p", cikti_boyutu=(640, 480))) == (1280, 960)
 
 
-def test_tamgpu_10bit_AYNI_vpp_filtresinde():
+def test_tamgpu_10bit_UYGULANMAZ():
     """
-    Olculdu: zincire ikinci bir AMF filtresi eklemek kararsizlastiriyor.
-    10-bit bu yuzden olcekleme filtresinin ICINDE istenir; ayri bir
-    vpp_amf=format eklenirse HQ buyutmeyle birlesince ffmpeg kilitleniyor.
+    OLCULDU (kullanicinin 4K dosyasi): TAM GPU hattinda vpp_amf=format=p010
+    ciktinin parlakligini bozuyor - YAVG 716 cikiyor, dogrusu 382.6; VMAF
+    3.37. Denenen hicbir varyant (color_range, color_profile, p010le,
+    olcekle birlestirme, kodlayicinin -bitdepth 10'u) duzeltmedi. Bu yuzden
+    bu hatta 10-bit HIC uygulanmaz; kullaniciya da soylenir.
     """
-    vf, _ = nv.build_filters(tamgpu_cfg(scale="720p", ten_bit=True), probes())
-    assert len(vf) == 1 and vf[0].startswith("vpp_amf=")
-    assert "format=p010" in vf[0] and "w=1280:h=720" in vf[0]
+    vf, notes = nv.build_filters(tamgpu_cfg(scale="720p", ten_bit=True), probes())
+    assert vf == ["vpp_amf=w=1280:h=720:scale_type=bicubic"]
+    assert not any("p010" in f for f in vf)
+    assert any("10-bit ATLANDI" in n for n in notes)
 
 
 def test_tamgpu_frc_ikinci_filtre_olarak_eklenir():
     vf, notes = nv.build_filters(
-        tamgpu_cfg(scale="720p", ten_bit=True, amf_frc=True), probes())
-    assert vf == ["vpp_amf=w=1280:h=720:scale_type=bicubic:format=p010", "frc_amf"]
+        tamgpu_cfg(scale="720p", amf_frc=True), probes())
+    assert vf == ["vpp_amf=w=1280:h=720:scale_type=bicubic", "frc_amf"]
     assert any("İKİ KATINA" in n for n in notes)
 
 
@@ -492,7 +495,7 @@ def test_tamgpu_HQ_buyutme_YALNIZ_calisir():
     Bu yuzden HQ acikken digerleri komuta GIRMEMELI.
     """
     vf, notes = nv.build_filters(
-        tamgpu_cfg(scale="720p", amf_sr=True, ten_bit=True, amf_frc=True), probes())
+        tamgpu_cfg(scale="720p", amf_sr=True, amf_frc=True), probes())
     assert vf == ["sr_amf=w=1280:h=720:algorithm=2"]
     assert not any("vpp_amf" in f or "frc_amf" in f for f in vf)
     assert any("HQ büyütme" in n and "ATLANDI" in n for n in notes)

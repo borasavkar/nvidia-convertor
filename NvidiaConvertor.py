@@ -21,7 +21,7 @@ from collections import deque
 # Zaman damgasi exe'nin kendi dosya tarihinden okunur; boylece surum
 # numarasini artirmayi unutsam bile hangi derlemenin calistigi kesin
 # anlasilir - bu, "yeni exe'yi mi calistiriyorum?" sorusunu bitirir.
-SURUM = "1.1.0"
+SURUM = "1.2.0"
 
 
 def surum_metni():
@@ -828,23 +828,27 @@ def build_filters(cfg, probes):
             if keskinlik not in (None, "", -1):
                 sr += f":sharpness={keskinlik}"
             vf_filters.append(sr)
-            engellenen = [ad for ad, acik in (("10-bit", cfg.get("ten_bit")),
-                                              ("kare hızı katlama", cfg.get("amf_frc")))
-                          if acik]
-            if engellenen:
-                notes.append("⚠️ HQ büyütme açıkken " + " ve ".join(engellenen) +
-                             " ATLANDI: ölçüldü, AMD'nin HQ büyütmesi başka bir "
-                             "AMF filtresiyle birlikte çöküyor ya da kilitleniyor.")
+            if cfg.get("amf_frc"):
+                notes.append("⚠️ HQ büyütme açıkken kare hızı katlama ATLANDI: "
+                             "ölçüldü, AMD'nin HQ büyütmesi başka bir AMF "
+                             "filtresiyle birlikte çöküyor.")
         else:
             # 10-bit AYNI vpp_amf filtresinde istenir; ayri filtre eklemek
             # zinciri uzatir ve kararsizlastirir (olculdu).
+            # 10-bit BU HATTA UYGULANMAZ: vpp_amf=format=p010 ciktinin
+            # parlakligini bozuyor (olculdu: YAVG 716, dogrusu 382.6; VMAF
+            # 3.37). Sekmede salter de yok; buradaki kontrol eski ayarlarla
+            # kuyruga girmis isler icin.
             vpp = []
             if hedef:
                 vpp.append(f"w={hedef[0]}:h={hedef[1]}:scale_type={AMF_TAMGPU_SCALE}")
-            if cfg.get("ten_bit"):
-                vpp.append("format=p010")
             if vpp:
                 vf_filters.append("vpp_amf=" + ":".join(vpp))
+            if cfg.get("ten_bit"):
+                notes.append("ℹ️ TAM GPU hattında 10-bit ATLANDI: bu sürücüde "
+                             "görüntüyü bozuyor (ölçüldü). 10-bit için AV1 ya "
+                             "da H.265 (AMD) sekmesini kullanın; orada hem "
+                             "doğru hem daha küçük çıkıyor.")
             if cfg.get("amf_frc"):
                 vf_filters.append("frc_amf")
                 notes.append("🎞️ Kare hızı hareket interpolasyonuyla İKİ KATINA "
@@ -1546,6 +1550,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # gelir; onbellek SART, cunku etiket kaydirici her oynadiginda
         # tazeleniyor ve her seferinde ffprobe kosmak arayuzu kilitlerdi.
         self._cq_boyut_onbellek = (None, None)   # (dosya yolu, (w, h))
+        self._ses_bitrate_onbellek = (None, None)  # (dosya yolu, kbps)
         # {marka: True/False} - acilista OLCULUR (bkz. donanimi_uygula).
         # Tarama bitene kadar bos: hicbir sey varsayilmaz.
         self.donanim = {}
@@ -1589,7 +1594,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # cozunurlugunden turuyor). Trace kullaniliyor ki hem dosya secme
         # penceresi hem surukle-birak hem de ileride eklenecek her yol ayni
         # tazelemeyi tetiklesin.
-        self.video_path.trace_add("write", lambda *a: self._refresh_all_cq_displays())
+        self.video_path.trace_add("write", lambda *a: (self._ses_varsayilanini_tazele(),
+                                                       self._refresh_all_cq_displays()))
 
         # --- KÖK YERLEŞİM ---
         # Ayar kartları + sekmeler tek başına ~1200 px istiyor; bu 1080p bir
@@ -2141,6 +2147,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         return {
             "container": ctk.StringVar(value=container_default),
             "audio_bitrate": ctk.StringVar(value=SES_KOPYALA),
+            # En son OTOMATIK konan ses ayari (bkz. _ses_varsayilanini_tazele).
+            "ses_auto": SES_KOPYALA,
             "preset": ctk.StringVar(value="p7"),
             "cq": ctk.IntVar(value=cq_default),
             # Tk degiskeni DEGIL, duz sayi: en son OTOMATIK konan CQ. Dosya
@@ -2208,6 +2216,40 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         boyut = self._cq_boyut_onbellek[1]
         return boyut if boyut and boyut[0] and boyut[1] else None
 
+    def _kaynak_ses_bitrate(self):
+        """Kaynagin ses bitrate'i (kbps) - onbellekli; okunamazsa None."""
+        yol = self.video_path.get()
+        if not yol or not os.path.isfile(yol):
+            return None
+        if self._ses_bitrate_onbellek[0] != yol:
+            self._ses_bitrate_onbellek = (yol, self.get_audio_bitrate(yol))
+        return self._ses_bitrate_onbellek[1]
+
+    def _ses_varsayilanini_tazele(self):
+        """
+        Kaynagin sesi 128 kbps'nin USTUNDEYSE ses varsayilanini 128k yapar,
+        degilse "Kopyala"da birakir.
+
+        Neden: 128k'nin ustundeki sesi oldugu gibi tasimak dosyayi buyutuyor;
+        128k'ya inmek kulakla ayirt edilmeyen bir fark karsiliginda ciddi yer
+        kazandiriyor. 128k'nin ALTINDAKI ses ise kopyalanir - onu yeniden
+        kodlamak dosyayi kucultmez, yalnizca kalite kaybettirir.
+
+        Kullanici ses kutusuna ELLE dokunduysa dokunulmaz (ses_auto ile
+        anlasiliyor; CQ kadranindaki mantigin aynisi).
+        """
+        kbps = self._kaynak_ses_bitrate()
+        hedef = "128k" if (kbps and kbps > 128) else SES_KOPYALA
+        for tab_vars in self.tabs.values():
+            var = tab_vars.get("audio_bitrate")
+            if var is None or not hasattr(var, "get"):
+                continue
+            if var.get() != tab_vars.get("ses_auto"):
+                continue                       # elle secilmis, dokunma
+            if var.get() != hedef:
+                var.set(hedef)
+                tab_vars["ses_auto"] = hedef
+
     def _update_cq_display(self, codec, tab_vars, lbl_cq_title, lbl_cq_status, slider_cq, label_prefix="CQ (Kalite)"):
         v = int(float(tab_vars["cq"].get()))
         current_scale = tab_vars["scale"].get()
@@ -2272,6 +2314,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "audio_bitrate": ctk.StringVar(value=SES_KOPYALA),
             "cq": ctk.IntVar(value=31),
             "cq_auto": 31,          # bkz. _nvenc_tab_vars: elle secim korumasi
+            "ses_auto": SES_KOPYALA,
             "scale": ctk.StringVar(value="Orijinal"),
             "vp9_quality": ctk.StringVar(value="good (Önerilen)"),
             "vp9_speed": ctk.StringVar(value="1 (VOD Önerisi)"),
@@ -2562,6 +2605,18 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # olur; HQ buyutme ozelligi de zaten buyutme demek oldugu icin
         # tamamen olu kalirdi (olculdu: sr_amf hic komuta girmiyordu).
         tab_vars["no_upscale"].set(False)
+        # 10-bit BU HATTA BOZUK, salteri hic gosterilmiyor ve kapali tutuluyor.
+        # OLCULDU (kullanicinin 4K dosyasi, QP 104): vpp_amf=format=p010
+        # ciktisinin parlakligi 716 cikiyor, dogrusu 382.6 (kaynak 95.66'nin
+        # 10-bit karsiligi). VMAF 3.37 - goruntu kullanilamaz durumda.
+        # Denenen ve ISE YARAMAYAN yollar: in/out_color_range=studio,
+        # color_profile=bt709, format=p010le, olcekle ayni filtrede birlestirme
+        # (hepsi ayni yanlis sonucu veriyor); format=yuv420p10le ve
+        # kodlayicinin "-bitdepth 10" secenegi ise bu hatta cokuyor.
+        # 10-bit gereken kullanici AV1/H.265 (AMD) sekmelerini kullanmali:
+        # orada dogru calisiyor ve DAHA KUCUK cikiyor (20.99 MB / VMAF 62.34,
+        # TAM GPU'nun bozuk 10-bit'i 25.93 MB idi).
+        tab_vars["ten_bit"].set(False)
         tab_vars["amf_sr"] = ctk.BooleanVar(value=False)
         tab_vars["amf_sr_algo"] = ctk.StringVar(value=list(AMF_SR_ALGORITMALARI)[0])
         tab_vars["amf_frc"] = ctk.BooleanVar(value=False)
@@ -2677,20 +2732,16 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             acik birakip sessizce atlamak yerine gorunur bicimde kapatiyoruz.
             """
             hq = tab_vars["amf_sr"].get()
-            for cb in (cb_10bit, cb_frc):
-                cb.configure(state="disabled" if hq else "normal")
+            cb_frc.configure(state="disabled" if hq else "normal")
             if hq:
-                tab_vars["ten_bit"].set(False)
                 tab_vars["amf_frc"].set(False)
             lbl_hq_not.configure(
-                text=("HQ büyütme açık: 10-bit ve kare katlama kullanılamaz "
-                      "(ölçüldü, birlikte kilitleniyor)." if hq else ""))
+                text=("HQ büyütme açık: kare katlama kullanılamaz "
+                      "(ölçüldü, ikisi birlikte çöküyor)." if hq else ""))
 
         for sira, (metin, degisken, aciklama, komut) in enumerate([
             ("HQ büyütme (AMD sr_amf)", tab_vars["amf_sr"],
              "Donanımsal super-resolution. Yalnız çalışır.", on_hq_degisti),
-            ("10-bit kodla (vpp_amf)", tab_vars["ten_bit"],
-             "Bantlanmayı azaltır. Bu hatta 10-bit sadece böyle alınır.", None),
             ("Kare hızını 2 katına çıkar", tab_vars["amf_frc"],
              "Hareket interpolasyonu (30->60). Dosya büyür.", None),
         ]):
@@ -2704,8 +2755,6 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                          text_color="#8A8A8A", justify="left", anchor="w",
                          height=16, wraplength=260).pack(anchor="w", padx=(26, 0), pady=(1, 0))
             if sira == 1:
-                cb_10bit = cb
-            elif sira == 2:
                 cb_frc = cb
         lbl_hq_not = ctk.CTkLabel(kart_salter, text="", font=("Arial", 10, "italic"),
                                   text_color="#FFA500", anchor="w")
@@ -3783,6 +3832,13 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                          "(eski varsayılan 128k idi; kaynaktan yüksek bitrate "
                          "kaliteyi artırmaz, dosyayı büyütür). İstediğiniz "
                          "sekmede geri değiştirebilirsiniz.")
+
+        # TAM GPU sekmesinde 10-bit YOK (bu surucude goruntuyu bozuyor) ama
+        # kaydedilmis eski ayarlarda acik durabilir; sekmede kapatacak bir
+        # salter olmadigi icin burada kesinlestiriyoruz.
+        for tab_vars in self.tabs.values():
+            if tab_vars.get("is_tamgpu") and hasattr(tab_vars.get("ten_bit"), "set"):
+                tab_vars["ten_bit"].set(False)
 
         # --- QP VARSAYILANI GOCU (bir kez) ---
         # Varsayilan artik onerilen bandin UST ucu (en tutumlu, olculen VMAF
