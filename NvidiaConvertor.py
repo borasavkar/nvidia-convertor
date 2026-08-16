@@ -3926,10 +3926,15 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # burada (ana thread'de) belirleyip cfg'ye koyuyoruz ki dogrulama
         # ffprobe'u tekrar calistirmak zorunda kalmasin.
         #
-        # Bu bir YAKLASIK degerdir, birebir tahmin degil: AMF kodlayicisi
-        # genisligi kendi hizasina yuvarliyor (olculdu: 854 -> 856). Amac
-        # minimum kare denetimi oldugu icin birkac pikselluk sapma onemsiz;
-        # kullaniciya gosterilen olcu de bu yuzden "yaklasik" okunmali.
+        # Bu bir YAKLASIK degerdir, birebir tahmin degil: av1_amf genisligi
+        # kendi hizasina yuvarliyor (olculdu: 854 -> 856). Amac minimum kare
+        # denetimi oldugu icin birkac pikselluk sapma onemsiz.
+        #
+        # OLCULDU (2026-08-16): yuvarlama YALNIZCA av1_amf'te var; hevc_amf
+        # ayni kaynakta 854'u aynen koruyor. Kodlayicinin "-align" secenegi
+        # bunu COZMUYOR: align=none yine 856 veriyor, align=64x16 ve
+        # align=1080p ise "Resolution incorrect for alignment mode" ile
+        # kodlayiciyi acmiyor. Bu yuzden -align komuta HIC eklenmiyor.
         if codec_v in AMF_CODECS:
             if cfg["scale"] != "Orijinal" and SCALE_MAP.get(cfg["scale"]):
                 # Olcekleme uzun kenari sabitler; kisa kenar en-boy oranindan
