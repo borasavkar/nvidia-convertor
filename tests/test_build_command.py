@@ -14,12 +14,12 @@ import sys
 import pytest
 
 APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "NvidiaConvertor.py")
+                   "VidForge.py")
 
 
 def _load():
     """Uygulamayi modul olarak yukler (GUI baslatmaz: __main__ korumasi var)."""
-    spec = importlib.util.spec_from_file_location("nvconv", APP)
+    spec = importlib.util.spec_from_file_location("vidforge", APP)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

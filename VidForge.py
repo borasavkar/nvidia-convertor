@@ -21,7 +21,7 @@ from collections import deque
 # Zaman damgasi exe'nin kendi dosya tarihinden okunur; boylece surum
 # numarasini artirmayi unutsam bile hangi derlemenin calistigi kesin
 # anlasilir - bu, "yeni exe'yi mi calistiriyorum?" sorusunu bitirir.
-SURUM = "1.6.0"
+SURUM = "2.0.0"
 
 
 def surum_metni():
@@ -37,8 +37,28 @@ def surum_metni():
 
 SETTINGS_PATH = os.path.join(
     os.environ.get("APPDATA") or os.path.expanduser("~"),
+    "VidForge", "settings.json"
+)
+
+# Uygulama "NvidiaConvertor" adiyla dogmustu; ad degisince ayarlar yeni
+# klasorden okunmaya baslar ve kullanicinin sekme tercihleri (QP, ses,
+# konteyner, metadata) SIFIRLANMIS gorunur. Eski dosya bir kez tasinir.
+ESKI_SETTINGS_PATH = os.path.join(
+    os.environ.get("APPDATA") or os.path.expanduser("~"),
     "NvidiaConvertor", "settings.json"
 )
+
+
+def ayarlari_tasi():
+    """Eski addan kalan ayar dosyasini yeni konuma kopyalar (bir kez)."""
+    try:
+        if os.path.isfile(SETTINGS_PATH) or not os.path.isfile(ESKI_SETTINGS_PATH):
+            return False
+        os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+        shutil.copy2(ESKI_SETTINGS_PATH, SETTINGS_PATH)
+        return True
+    except Exception:
+        return False
 
 
 def find_tool(name, tercih_dizin=None):
@@ -1573,7 +1593,7 @@ def escape_filter_path(path):
 class FFmpegStudioPro(ctk.CTk, _DndBase):
     def __init__(self):
         super().__init__()
-        self.title(f"Nvidia Cuda Video Convertor - Ultimate Edition   {surum_metni()}")
+        self.title(f"VidForge — Donanımsal Video Dönüştürücü   {surum_metni()}")
         # Konum da belirtilir: Tk'nin varsayilan yerlesimi pencereyi ekranin
         # ortasina koyup altini gorev cubugunun altinda birakiyordu.
         _gen, _yuk = PENCERE_GENISLIK, self._uygun_yukseklik(1300)
@@ -3329,7 +3349,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 if zaman is None:
                     sure = self.get_video_duration(cfg["input_file"])
                     zaman = sure / 2 if sure > 0 else 0.0
-                png = os.path.join(tempfile.gettempdir(), "nvconv_onizleme.png")
+                png = os.path.join(tempfile.gettempdir(), "vidforge_onizleme.png")
                 cmd = build_preview_command(cfg, probes, png, zaman)
                 cmd[0] = FFMPEG_BIN
                 sonuc = subprocess.run(
@@ -3692,7 +3712,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         """
         tmp = os.path.join(
             os.environ.get("TEMP", os.path.dirname(filepath)),
-            "_nvconv_actest." + container
+            "_vidforge_actest." + container
         )
         cmd = [FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-i", filepath,
                "-map", "0:a:0", "-c:a", "copy", "-t", "0.5", "-y", tmp]
@@ -3851,6 +3871,8 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         Kayitli ayarlari yukler. Bozuk/eski dosya programi acilmaz hale
         getirmemeli: her deger tek tek ve dogrulanarak uygulanir.
         """
+        # Eski adla kaydedilmis ayarlar varsa once tasinir (bkz. ayarlari_tasi).
+        tasindi = ayarlari_tasi()
         try:
             with open(SETTINGS_PATH, encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -3858,6 +3880,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             return
         if not isinstance(data, dict):
             return
+        if tasindi:
+            self.log("ℹ️ Uygulama adı VidForge oldu; eski ayarlarınız yeni "
+                     "konuma taşındı (sekme tercihleriniz korundu).")
 
         def ata(var, deger, gecerli=None):
             if deger is None:
@@ -4368,7 +4393,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         """
         satirlar = [
             "=" * 70,
-            f"NvidiaConvertor {surum_metni()}",
+            f"VidForge {surum_metni()}",
             f"hata dokumu - {time.strftime('%Y-%m-%d %H:%M:%S')}",
             "=" * 70,
             f"Cikis kodu   : {cikis_kodu}",
@@ -4402,7 +4427,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         if temel:
             adaylar.append(temel + ".hata.log")
         adaylar.append(os.path.join(tempfile.gettempdir(),
-                                    "NvidiaConvertor_hata.log"))
+                                    "VidForge_hata.log"))
         for yol in adaylar:
             try:
                 with open(yol, "w", encoding="utf-8") as f:
