@@ -325,6 +325,10 @@ AMF_SEKME_ADI = {
     "h264_amf": "H.264 (AMD)",
 }
 
+# TAM GPU (kopyasiz AMF hatti) kendi sekmesinde durur; kodlayici o sekmenin
+# icinden secilir. Neden ayri sekme oldugu icin bkz. COZUCU_SECENEKLERI notu.
+TAMGPU_SEKME = "⚡ TAM GPU (AMD)"
+
 DONANIM = {
     NVIDIA: {
         "ad": "NVIDIA",
@@ -337,7 +341,7 @@ DONANIM = {
     AMD: {
         "ad": "AMD",
         "deneme": "hevc_amf",
-        "sekmeler": tuple(AMF_SEKME_ADI.values()),
+        "sekmeler": tuple(AMF_SEKME_ADI.values()) + (TAMGPU_SEKME,),
     },
 }
 
@@ -436,9 +440,14 @@ D3D11VA_ISTEMEYEN_KODEKLER = frozenset({"av1"})
 
 # Kullanicinin donanim cozucu tercihi. "Otomatik" yukaridaki olcume uyar;
 # digerleri kullanicinin bilinçli secimidir (dusuk CPU mu, kisa sure mi).
+#
+# TAM GPU BURADA YOK, ARTIK KENDI SEKMESI VAR (bkz. TAMGPU_SEKME). Sebep:
+# o hatta altyazi gomme, renk filtresi ve taraklanma giderme CALISAMIYOR ve
+# secenek burada dururken bu ozellikler SESSIZCE atlaniyordu - kullanici
+# altyazi ekleyip 83 dakika bekledikten sonra altyazisiz dosya buluyordu.
+# Ayri sekmede yalnizca o hatta gercekten calisan secenekler gosteriliyor.
 COZUCU_SECENEKLERI = {
     "Otomatik (ölçüme göre)": "oto",
-    "TAM GPU hattı (AMF, kopyasız)": "tamgpu",
     "Donanım - GPU (d3d11va)": "donanim",
     "Yazılım - CPU (dav1d vb.)": "yazilim",
 }
@@ -471,6 +480,30 @@ AMF_EXTRA_HW_FRAMES = "10"
 # Tam GPU hattinda kare AMF yuzeyinde kalir; bu filtrelerin AMF karsiligi yok
 # ve zinciri kirar. Istenirse kullaniciya soylenip ATLANIR.
 AMF_TAMGPU_DESTEKLENMEYEN = ("renk filtresi", "taraklanma giderme", "altyazı gömme")
+
+# sr_amf = AMD'nin donanimsal HQ buyutmesi (ffmpeg -h filter=sr_amf).
+# Olculdu: 640x480 -> 1280x960 calisiyor.
+AMF_SR_ALGORITMALARI = {
+    "SR 1.1 (AMD, en iyi)": "4",
+    "SR 1.0 (AMD)": "2",
+    "Bicubic": "1",
+    "Bilinear": "0",
+}
+
+# HANGI AMF FILTRELERI BIR ARADA CALISIR - OLCULDU (RX 9070 XT, ffmpeg 9.0.1;
+# her birlesim hevc_amf ve av1_amf ile 3'er kez kosuldu):
+#     vpp_amf olcekleme                      -> 6/6 basarili
+#     vpp_amf olcekleme + format=p010        -> 6/6   (10-bit AYNI filtrede)
+#     vpp_amf(olcek+10bit) + frc_amf         -> 6/6   (zincirde IKI AMF filtresi)
+#     sr_amf tek basina                      -> 6/6
+#     sr_amf + frc_amf                       -> 5/6   COKTU
+#     sr_amf + vpp_amf(format=p010)          -> 5/6   COKTU
+#     sr_amf + vpp_amf + frc_amf             -> KILITLENDI (1 sn'lik klip, 180 sn)
+# Sonuc: sr_amf BASKA BIR AMF FILTRESIYLE BIRLESTIRILMEZ. HQ buyutme secilince
+# 10-bit ve kare katlama uygulanmaz; arayuz de o iki salteri kapatir.
+# ("-pix_fmt p010le" ile 10-bit istemek de bu hatta cokuyor: "Error
+# reinitializing filters!" - 10-bit YALNIZCA vpp_amf=format ile alinir.)
+AMF_SR_YALNIZ_CALISIR = True
 
 
 def amf_qp_tavani(codec):
@@ -697,6 +730,27 @@ def cuda_color_roundtrip_ok(pix_fmt):
     return cuda_download_format(pix_fmt) != "p016le"
 
 
+def tamgpu_hedef_boyut(cfg):
+    """
+    TAM GPU hattinda olceklemenin hedef karesi (w, h); olcekleme yoksa None.
+    SAF FONKSIYON.
+
+    AMF filtreleri (vpp_amf/sr_amf) ifade KABUL ETMIYOR - "-2" ya da
+    "if(gt(a,1),..)" yazilamaz - bu yuzden iki boyut da burada acikca
+    hesaplanir. Kaynak orani bilinmiyorsa 16:9 varsayilir.
+    """
+    if cfg.get("scale") == "Orijinal":
+        return None
+    uzun = SCALE_MAP.get(cfg.get("scale"))
+    if uzun is None:
+        return None
+    kw, kh = cfg.get("cikti_boyutu") or (0, 0)
+    if kw and kh:
+        return (uzun, max(2, round(uzun * kh / kw))) if kw >= kh else \
+               (max(2, round(uzun * kw / kh)), uzun)
+    return (uzun, round(uzun * 9 / 16))
+
+
 def build_filters(cfg, probes):
     """
     Video filtre zincirini kurar. SAF FONKSIYON.
@@ -717,21 +771,53 @@ def build_filters(cfg, probes):
     # Kare AMF yuzeyinde kalir. Yalnizca vpp_amf calisabilir; renk/taraklanma/
     # altyazi filtrelerinin AMF karsiligi yok ve zinciri kirarlar.
     if cfg.get("tam_gpu"):
-        if cfg["scale"] != "Orijinal":
-            w = SCALE_MAP.get(cfg["scale"])
-            if w is None:
-                notes.append(f"⚠️ Bilinmeyen çözünürlük: {cfg['scale']}, Orijinal kullanılıyor.")
-            else:
-                # vpp_amf ifade kabul etmiyor; uzun kenari kaynagin oranina
-                # gore hesaplayip iki boyutu da acikca veriyoruz.
-                kw, kh = cfg.get("cikti_boyutu") or (0, 0)
-                if kw and kh:
-                    hedef = (w, max(2, round(w * kh / kw))) if kw >= kh else \
-                            (max(2, round(w * kw / kh)), w)
-                else:
-                    hedef = (w, round(w * 9 / 16))
-                vf_filters.append(
-                    f"vpp_amf=w={hedef[0]}:h={hedef[1]}:scale_type={AMF_TAMGPU_SCALE}")
+        hedef = tamgpu_hedef_boyut(cfg)
+        if cfg["scale"] != "Orijinal" and hedef is None:
+            notes.append(f"⚠️ Bilinmeyen çözünürlük: {cfg['scale']}, Orijinal kullanılıyor.")
+
+        # HQ buyutme (sr_amf) YALNIZ calisir: baska bir AMF filtresiyle
+        # birlesince coküyor, ucu bir arada ise kilitleniyor (bkz.
+        # AMF_SR_YALNIZ_CALISIR olcumu). Arayuz de bu iki salteri kapatir;
+        # buradaki kontrol kuyruga eski ayarlarla giren isler icin.
+        hq = bool(cfg.get("amf_sr")) and hedef is not None
+        if hq:
+            sr = f"sr_amf=w={hedef[0]}:h={hedef[1]}:algorithm={cfg.get('amf_sr_algo', '4')}"
+            keskinlik = cfg.get("amf_sr_sharpness")
+            if keskinlik not in (None, "", -1):
+                sr += f":sharpness={keskinlik}"
+            vf_filters.append(sr)
+            engellenen = [ad for ad, acik in (("10-bit", cfg.get("ten_bit")),
+                                              ("kare hızı katlama", cfg.get("amf_frc")))
+                          if acik]
+            if engellenen:
+                notes.append("⚠️ HQ büyütme açıkken " + " ve ".join(engellenen) +
+                             " ATLANDI: ölçüldü, AMD'nin HQ büyütmesi başka bir "
+                             "AMF filtresiyle birlikte çöküyor ya da kilitleniyor.")
+        else:
+            # 10-bit AYNI vpp_amf filtresinde istenir; ayri filtre eklemek
+            # zinciri uzatir ve kararsizlastirir (olculdu).
+            vpp = []
+            if hedef:
+                vpp.append(f"w={hedef[0]}:h={hedef[1]}:scale_type={AMF_TAMGPU_SCALE}")
+            if cfg.get("ten_bit"):
+                vpp.append("format=p010")
+            if vpp:
+                vf_filters.append("vpp_amf=" + ":".join(vpp))
+            if cfg.get("amf_frc"):
+                vf_filters.append("frc_amf")
+                notes.append("🎞️ Kare hızı hareket interpolasyonuyla İKİ KATINA "
+                             "çıkarılıyor (frc_amf). Dosya büyür ve görüntü "
+                             "'video' karakterine kayar.")
+
+        # Renk etiketi bu hatta da yazilabiliyor (setparams metadata filtresi;
+        # kareye dokunmadigi icin AMF yuzeyini bozmuyor - olculdu). 10-bit
+        # cikti + etiketsiz kaynak birlesimi olmadan sahte HDR uretiyordu.
+        if probes.get("renk_etiketsiz"):
+            vf_filters.append("setparams=color_primaries=bt709:color_trc=bt709"
+                              ":colorspace=bt709:range=tv")
+            notes.append("🎨 Kaynakta renk etiketi yok; çıktı BT.709 olarak "
+                         "işaretlendi.")
+
         atlanan = []
         if color_filter_of(cfg):
             atlanan.append("renk filtresi")
@@ -1591,6 +1677,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         # ada gore yonlendiriyor, iki yerde ayri yazilsa biri eskirdi.
         for amf_kodek, amf_sekme in AMF_SEKME_ADI.items():
             self.create_amd_tab(amf_sekme, amf_kodek)
+        self.create_tamgpu_tab(TAMGPU_SEKME)
         self.create_vp9_tab("VP9 (Google VOD)")
         self.create_cuda_tab("⚡ SAF CUDA")
         self.create_remux_tab("💬 SADECE ALTYAZI")
@@ -1842,7 +1929,13 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         "preset": PRESET_VALUES,
         "scale": SCALE_VALUES,
         "interp_algo": ["Otomatik", "bilinear", "bicubic", "lanczos"],
-        "selected_codec": ["AV1 (av1_nvenc)", "H.265 (hevc_nvenc)", "H.264 (h264_nvenc)"],
+        # NVENC (SAF CUDA) ve AMF (TAM GPU) sekmeleri ayni degisken adini
+        # kullanir; ikisinin degerleri de gecerli sayilmali, yoksa kaydedilmis
+        # ayar dogrulamadan gecemez ve sessizce yok sayilir.
+        "selected_codec": (["AV1 (av1_nvenc)", "H.265 (hevc_nvenc)", "H.264 (h264_nvenc)"]
+                           + [f"{ad.split(' ')[0]} ({kod})"
+                              for kod, ad in AMF_SEKME_ADI.items()]),
+        "amf_sr_algo": list(AMF_SR_ALGORITMALARI),
         "vp9_quality": ["good (Önerilen)", "best (Aşırı Yavaş)", "realtime"],
         "vp9_speed": ["0 (Maksimum Kalite)", "1 (VOD Önerisi)", "2 (Standart)", "3 (Hızlı)", "4", "5 (En Hızlı)"],
         "vp9_tiles": ["0 (Tek Sütun)", "1 (Düşük Çöz. için)", "2 (1080p için)", "3 (4K/1440p için)", "4 (8K)"],
@@ -1955,7 +2048,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             return istenen
 
     def _tab_meta(self, is_pure_cuda, is_vp9, accent, supports_subs=True,
-                  is_remux=False):
+                  is_remux=False, is_tamgpu=False):
         """Sekme davranisini isim icinde metin aramak yerine veri olarak tasir."""
         return {
             "is_pure_cuda": is_pure_cuda,
@@ -1964,6 +2057,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "supports_subs": supports_subs,
             # True ise kodlama YOK: video/ses kopyalanir, yalnizca altyazi eklenir.
             "is_remux": is_remux,
+            # True ise kare AMF yuzeyinde kalir (kopyasiz hat, bkz.
+            # create_tamgpu_tab). Cozucu artik burada belirlenir, sekme
+            # icindeki bir listeyle degil.
+            "is_tamgpu": is_tamgpu,
         }
 
     def _nvenc_tab_vars(self, container_default, cq_default):
@@ -2367,6 +2464,200 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
     # =======================================================
     # SAF CUDA SEKMESİ
     # =======================================================
+    def create_tamgpu_tab(self, tab_name):
+        """
+        TAM GPU (AMF) sekmesi: cozme, olcekleme ve kodlama GPU'da kalir, kare
+        hic sistem bellegine inmez.
+
+        Neden ayri sekme: bu hatta altyazi gomme, renk filtresi ve taraklanma
+        giderme CALISAMIYOR. Eskiden bu bir "kod cozucu" secenegiydi ve
+        secildiginde bu ozellikler sessizce atlaniyordu - kullanici altyazi
+        secip uzun bir kodlamadan sonra altyazisiz dosya buluyordu. Burada o
+        secenekler HIC GOSTERILMIYOR; yalnizca olculerek calistigi dogrulanan
+        yetenekler var (bkz. AMF_SR_YALNIZ_CALISIR olcumu).
+        """
+        self.tabview.add(tab_name)
+        frame = self.tabview.tab(tab_name)
+
+        tab_vars = self._nvenc_tab_vars("mkv", get_cq_default("av1_amf", "Orijinal"))
+        tab_vars["selected_codec"] = ctk.StringVar(value="AV1 (av1_amf)")
+        tab_vars["amf_quality"] = ctk.StringVar(value="quality")
+        # Paylasilan degisken setinde "kaynaktan buyutme yapma" ACIK gelir ve
+        # bu sekmede o salter YOK. Acik birakilirsa buyutme sessizce iptal
+        # olur; HQ buyutme ozelligi de zaten buyutme demek oldugu icin
+        # tamamen olu kalirdi (olculdu: sr_amf hic komuta girmiyordu).
+        tab_vars["no_upscale"].set(False)
+        tab_vars["amf_sr"] = ctk.BooleanVar(value=False)
+        tab_vars["amf_sr_algo"] = ctk.StringVar(value=list(AMF_SR_ALGORITMALARI)[0])
+        tab_vars["amf_frc"] = ctk.BooleanVar(value=False)
+        tab_vars.update(self._tab_meta(is_pure_cuda=False, is_vp9=False,
+                                       accent=("#c0392b", "#922b21", "white"),
+                                       supports_subs=False, is_tamgpu=True))
+        self.tabs[tab_name] = tab_vars
+
+        main_grid = ctk.CTkFrame(frame, fg_color="transparent")
+        main_grid.pack(fill="both", expand=True)
+        main_grid.columnconfigure(0, weight=1)
+        main_grid.columnconfigure(1, weight=1)
+        col_left = ctk.CTkFrame(main_grid, fg_color="transparent")
+        col_left.grid(row=0, column=0, sticky="nsew", padx=5)
+
+        def secili_kodek():
+            return tab_vars["selected_codec"].get().split("(")[1].split(")")[0]
+
+        # En son uygulanan QP tavani; her kaydirici hareketinde widget'i
+        # yeniden yapilandirmamak icin tutuluyor.
+        son_tavan = {"deger": None}
+
+        def tavani_uygula(kodek):
+            """
+            QP olcegini KODEGE uydurur (av1_amf 0-255, digerleri 0-51) ve
+            eldeki deger tavanin ustundeyse gecerli bir degere ceker.
+
+            OLCULDU, bu kontrol olmadan gercek bir kusur cikiyor: ayarlar geri
+            yuklenirken kodek H.265 olarak gelse bile kaydirici AV1 icin
+            kurulmus 0-255 olceginde kaliyor; oradan secilen QP ffmpeg'e
+            gidince "Error opening output files: Result too large" ile
+            duruyor - kullanicinin anlamasi imkansiz bir mesaj.
+            """
+            tavan = amf_qp_tavani(kodek)
+            if son_tavan["deger"] != tavan:
+                slider_cq.configure(to=tavan, number_of_steps=tavan)
+                lbl_olcek.configure(text=f"* Bu kodlayıcının QP ölçeği 0-{tavan}. "
+                                         "Düşük = büyük dosya.")
+                son_tavan["deger"] = tavan
+            if int(float(tab_vars["cq"].get())) > tavan:
+                yeni = get_cq_default(kodek, tab_vars["scale"].get(),
+                                      self._kaynak_boyut_cq())
+                tab_vars["cq_auto"] = yeni
+                tab_vars["cq"].set(yeni)
+                slider_cq.set(yeni)
+
+        def on_cq_change(*args):
+            kodek = secili_kodek()
+            tavani_uygula(kodek)
+            self._update_cq_display(kodek, tab_vars, lbl_cq_title,
+                                    lbl_cq_status, slider_cq, "QP (Kalite)")
+
+        card_codec = self.create_card(col_left, "🔴 Donanım Motoru (AMF, kopyasız)")
+        card_codec.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(card_codec, text="Kodlayıcı:").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_codec, variable=tab_vars["selected_codec"],
+                         values=[f"{ad.split(' ')[0]} ({kod})"
+                                 for kod, ad in AMF_SEKME_ADI.items()],
+                         command=lambda secim: on_kodek_degisti(secim)
+                         ).pack(fill="x", padx=15, pady=(0, 10))
+        ctk.CTkLabel(card_codec, text="Konteyner:").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_codec, variable=tab_vars["container"],
+                         values=["mkv", "mp4"]).pack(fill="x", padx=15, pady=(0, 15))
+
+        self._create_audio_card(col_left, tab_vars, pady=10)
+
+        card_amf = self.create_card(col_left, "⚙️ AMF Ön Ayarları")
+        card_amf.pack(fill="x", pady=10)
+        ctk.CTkLabel(card_amf, text="Kalite Ön Ayarı:").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_amf, variable=tab_vars["amf_quality"],
+                         values=AMF_QUALITY_VALUES).pack(fill="x", padx=15, pady=(0, 10))
+        lbl_cq_title = ctk.CTkLabel(card_amf, text="QP (Kalite):", font=("Arial", 13, "bold"))
+        lbl_cq_status = ctk.CTkLabel(card_amf, text="", font=("Arial", 11, "italic"))
+        lbl_cq_title.pack(anchor="w", padx=15, pady=(5, 0))
+        lbl_cq_status.pack(anchor="w", padx=15, pady=(0, 5))
+        tavan = amf_qp_tavani("av1_amf")
+        slider_cq = ctk.CTkSlider(card_amf, from_=0, to=tavan, number_of_steps=tavan,
+                                  variable=tab_vars["cq"], command=on_cq_change)
+        slider_cq.pack(fill="x", padx=15, pady=(0, 5))
+        lbl_olcek = ctk.CTkLabel(card_amf, text="", font=("Arial", 10, "italic"),
+                                 text_color="gray", anchor="w")
+        lbl_olcek.pack(anchor="w", padx=15, pady=(0, 10))
+
+        col_right = ctk.CTkFrame(main_grid, fg_color="transparent")
+        col_right.grid(row=0, column=1, sticky="nsew", padx=5)
+
+        card_res = self.create_card(col_right, "📐 Çözünürlük (GPU'da)")
+        card_res.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(card_res, text="Ölçekleme:").pack(anchor="w", padx=15)
+        ReadOnlyComboBox(card_res, variable=tab_vars["scale"], values=self.SCALE_VALUES,
+                         command=lambda secim: self._auto_set_cq(
+                             secili_kodek(), secim, tab_vars, slider_cq,
+                             lbl_cq_title, lbl_cq_status, "QP (Kalite)")
+                         ).pack(fill="x", padx=15, pady=(0, 10))
+        ctk.CTkLabel(card_res, text="HQ büyütme algoritması:").pack(anchor="w", padx=15)
+        cb_sr_algo = ReadOnlyComboBox(card_res, variable=tab_vars["amf_sr_algo"],
+                                      values=list(AMF_SR_ALGORITMALARI))
+        cb_sr_algo.pack(fill="x", padx=15, pady=(0, 15))
+
+        self._create_metadata_card(col_right, tab_vars)
+
+        kart_salter = self.create_card(main_grid, "🛠️ TAM GPU Seçenekleri")
+        kafes = ctk.CTkFrame(kart_salter, fg_color="transparent")
+        kafes.pack(fill="x", padx=10, pady=(0, 10))
+        for i in range(3):
+            kafes.grid_columnconfigure(i, weight=1, uniform="salter")
+
+        def on_hq_degisti():
+            """
+            HQ buyutme acikken 10-bit ve kare katlama KAPATILIR.
+            Olculdu: sr_amf baska bir AMF filtresiyle birlesince 6 kosuda 1
+            cokuyor, ucu bir arada ise ffmpeg tamamen kilitleniyor. Salterleri
+            acik birakip sessizce atlamak yerine gorunur bicimde kapatiyoruz.
+            """
+            hq = tab_vars["amf_sr"].get()
+            for cb in (cb_10bit, cb_frc):
+                cb.configure(state="disabled" if hq else "normal")
+            if hq:
+                tab_vars["ten_bit"].set(False)
+                tab_vars["amf_frc"].set(False)
+            lbl_hq_not.configure(
+                text=("HQ büyütme açık: 10-bit ve kare katlama kullanılamaz "
+                      "(ölçüldü, birlikte kilitleniyor)." if hq else ""))
+
+        for sira, (metin, degisken, aciklama, komut) in enumerate([
+            ("HQ büyütme (AMD sr_amf)", tab_vars["amf_sr"],
+             "Donanımsal super-resolution. Yalnız çalışır.", on_hq_degisti),
+            ("10-bit kodla (vpp_amf)", tab_vars["ten_bit"],
+             "Bantlanmayı azaltır. Bu hatta 10-bit sadece böyle alınır.", None),
+            ("Kare hızını 2 katına çıkar", tab_vars["amf_frc"],
+             "Hareket interpolasyonu (30->60). Dosya büyür.", None),
+        ]):
+            hucre = ctk.CTkFrame(kafes, fg_color="transparent")
+            hucre.grid(row=0, column=sira, sticky="nsew", padx=4, pady=(4, 2))
+            cb = ctk.CTkCheckBox(hucre, text=metin, variable=degisken,
+                                 command=komut) if komut else \
+                 ctk.CTkCheckBox(hucre, text=metin, variable=degisken)
+            cb.pack(anchor="w")
+            ctk.CTkLabel(hucre, text=aciklama, font=("Arial", 10, "italic"),
+                         text_color="#8A8A8A", justify="left", anchor="w",
+                         height=16, wraplength=260).pack(anchor="w", padx=(26, 0), pady=(1, 0))
+            if sira == 1:
+                cb_10bit = cb
+            elif sira == 2:
+                cb_frc = cb
+        lbl_hq_not = ctk.CTkLabel(kart_salter, text="", font=("Arial", 10, "italic"),
+                                  text_color="#FFA500", anchor="w")
+        lbl_hq_not.pack(anchor="w", padx=15, pady=(0, 8))
+        ctk.CTkLabel(kart_salter,
+                     text="Bu sekmede altyazı gömme, renk filtresi ve taraklanma "
+                          "giderme YOKTUR: kare GPU'da kaldığı için bunların AMF "
+                          "karşılığı yok. Gerekiyorsa AV1/H.265/H.264 (AMD) "
+                          "sekmelerini kullanın. Seçtiğiniz çözünürlük kaynaktan "
+                          "büyükse burada BÜYÜTÜLÜR (büyütme koruması yok; HQ "
+                          "büyütme zaten bunun için).",
+                     font=("Arial", 10, "italic"), text_color="#8A8A8A",
+                     justify="left", anchor="w", wraplength=760).pack(anchor="w", padx=15, pady=(0, 10))
+
+        def on_kodek_degisti(secim):
+            kodek = secim.split("(")[1].split(")")[0]
+            tavani_uygula(kodek)
+            tab_vars["container"].set("mkv" if kodek == "av1_amf" else "mp4")
+            # Kodek degisince QP'yi o kodegin olculen bandina cek: olcekler
+            # birbirine cevrilemez (AV1'de 144 iyi kalite, H.265'te gecersiz).
+            self._auto_set_cq(kodek, tab_vars["scale"].get(), tab_vars, slider_cq,
+                              lbl_cq_title, lbl_cq_status, "QP (Kalite)")
+
+        on_kodek_degisti(tab_vars["selected_codec"].get())
+        on_hq_degisti()
+        self.cq_refreshers[tab_name] = on_cq_change
+
     def create_cuda_tab(self, tab_name):
         self.tabview.add(tab_name)
         frame = self.tabview.tab(tab_name)
@@ -3414,7 +3705,9 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             var = tab_vars.get(anahtar)
             return var.get() if hasattr(var, "get") else varsayilan
 
-        if is_pure_cuda:
+        # Kodlayicisini sekme icinden secturen sekmeler (SAF CUDA ve TAM GPU)
+        # "selected_codec" tasir; digerlerinde kodlayici sekmenin kendisidir.
+        if "selected_codec" in tab_vars:
             codec_v = tab_vars["selected_codec"].get().split("(")[1].split(")")[0]
         else:
             codec_v = tab_vars["codec"]
@@ -3446,6 +3739,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "ten_bit": tab_vars["ten_bit"].get() if "ten_bit" in tab_vars else True,
             "interp_algo": tab_vars["interp_algo"].get() if "interp_algo" in tab_vars else "Otomatik",
             "amf_quality": oku("amf_quality", "quality"),
+            # TAM GPU sekmesine ozgu (digerlerinde bu degiskenler yok).
+            "amf_sr": tab_vars["amf_sr"].get() if "amf_sr" in tab_vars else False,
+            "amf_sr_algo": AMF_SR_ALGORITMALARI.get(oku("amf_sr_algo", ""), "4"),
+            "amf_frc": tab_vars["amf_frc"].get() if "amf_frc" in tab_vars else False,
             "output_dir": self.output_dir.get().strip(),
             "name_with_cq": self.name_with_cq.get(),
             "trim_start": self.trim_start.get(),
@@ -3499,9 +3796,14 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             kaynak = self.get_video_codec(cfg["input_file"])
             return "" if kaynak in D3D11VA_ISTEMEYEN_KODEKLER else "d3d11va"
 
-        if codec_v in AMF_CODECS:
+        if tab_vars.get("is_tamgpu"):
+            # Kopyasiz hat: cozucu de AMF olmak ZORUNDA. Olculdu, "-hwaccel
+            # d3d11va -hwaccel_output_format amf" birlesimi cokuyor.
+            cfg["hwaccel"] = "amf"
+            cfg["tam_gpu"] = True
+        elif codec_v in AMF_CODECS:
             cfg["hwaccel"] = amd_cozucu()
-            cfg["tam_gpu"] = cfg["hwaccel"] == "amf"
+            cfg["tam_gpu"] = False
         elif codec_v.endswith("_nvenc"):
             cfg["hwaccel"] = "cuda"
         elif self.donanim.get(NVIDIA):

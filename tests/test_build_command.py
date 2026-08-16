@@ -443,6 +443,81 @@ def test_amf_kabul_eden_sekmeler_olculen_sinirlara_uyuyor():
     assert nv.amf_kabul_eden_sekmeler(64, 32) == []
 
 
+def tamgpu_cfg(**kw):
+    """TAM GPU sekmesinin urettigi is tanimi."""
+    base = amd_cfg(tam_gpu=True, hwaccel="amf", tab_name=nv.TAMGPU_SEKME,
+                   scale="Orijinal", cikti_boyutu=(1920, 1080), ten_bit=False,
+                   amf_sr=False, amf_sr_algo="4", amf_frc=False)
+    base.update(kw)
+    return base
+
+
+def test_tamgpu_hedef_boyut():
+    assert nv.tamgpu_hedef_boyut(tamgpu_cfg(scale="Orijinal")) is None
+    # AMF filtreleri ifade kabul etmiyor: iki boyut da acikca hesaplanmali
+    assert nv.tamgpu_hedef_boyut(tamgpu_cfg(scale="720p")) == (1280, 720)
+    # Dikey kaynak: uzun kenar yukseklige gider
+    assert nv.tamgpu_hedef_boyut(
+        tamgpu_cfg(scale="720p", cikti_boyutu=(1080, 1920))) == (720, 1280)
+    # 4:3 kaynak
+    assert nv.tamgpu_hedef_boyut(
+        tamgpu_cfg(scale="720p", cikti_boyutu=(640, 480))) == (1280, 960)
+
+
+def test_tamgpu_10bit_AYNI_vpp_filtresinde():
+    """
+    Olculdu: zincire ikinci bir AMF filtresi eklemek kararsizlastiriyor.
+    10-bit bu yuzden olcekleme filtresinin ICINDE istenir; ayri bir
+    vpp_amf=format eklenirse HQ buyutmeyle birlesince ffmpeg kilitleniyor.
+    """
+    vf, _ = nv.build_filters(tamgpu_cfg(scale="720p", ten_bit=True), probes())
+    assert len(vf) == 1 and vf[0].startswith("vpp_amf=")
+    assert "format=p010" in vf[0] and "w=1280:h=720" in vf[0]
+
+
+def test_tamgpu_frc_ikinci_filtre_olarak_eklenir():
+    vf, notes = nv.build_filters(
+        tamgpu_cfg(scale="720p", ten_bit=True, amf_frc=True), probes())
+    assert vf == ["vpp_amf=w=1280:h=720:scale_type=bicubic:format=p010", "frc_amf"]
+    assert any("İKİ KATINA" in n for n in notes)
+
+
+def test_tamgpu_HQ_buyutme_YALNIZ_calisir():
+    """
+    Olculdu (6'sar kosu): sr_amf tek basina 6/6 saglam; frc_amf ya da
+    vpp_amf(format) ile birlesince 5/6; ucu bir arada ffmpeg KILITLENIYOR.
+    Bu yuzden HQ acikken digerleri komuta GIRMEMELI.
+    """
+    vf, notes = nv.build_filters(
+        tamgpu_cfg(scale="720p", amf_sr=True, ten_bit=True, amf_frc=True), probes())
+    assert vf == ["sr_amf=w=1280:h=720:algorithm=4"]
+    assert not any("vpp_amf" in f or "frc_amf" in f for f in vf)
+    assert any("HQ büyütme" in n and "ATLANDI" in n for n in notes)
+
+
+def test_tamgpu_renk_etiketi_yazilabiliyor():
+    """setparams kareye dokunmaz (metadata), AMF yuzeyini bozmuyor - olculdu."""
+    vf, _ = nv.build_filters(tamgpu_cfg(), probes(renk_etiketsiz=True))
+    assert any(f.startswith("setparams=") for f in vf)
+
+
+def test_tamgpu_yapamadiklarini_SOYLUYOR():
+    vf, notes = nv.build_filters(tamgpu_cfg(sub_file=r"C:\a.srt", use_bwdif=True),
+                                 probes())
+    assert not any("subtitles" in f or "bwdif" in f for f in vf)
+    assert any("altyazı gömme" in n for n in notes)
+
+
+def test_tamgpu_kendi_sekmesinde_cozucu_listesinde_DEGIL():
+    """
+    Kusur: TAM GPU bir "kod cozucu" secenegiyken secildiginde altyazi/renk/
+    taraklanma SESSIZCE atlaniyordu. Artik kendi sekmesinde ve o sekmede bu
+    secenekler hic gosterilmiyor.
+    """
+    assert not any("TAM GPU" in ad for ad in nv.COZUCU_SECENEKLERI)
+    assert nv.TAMGPU_SEKME in nv.DONANIM[nv.AMD]["sekmeler"]
+
+
 def test_ses_varsayilani_KOPYALA():
     """
     Olculdu (1.mp4, 83 dk): 32 kbps AAC kaynak 128 kbps Opus'a kodlanınca ses
