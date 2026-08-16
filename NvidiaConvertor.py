@@ -482,13 +482,21 @@ AMF_EXTRA_HW_FRAMES = "10"
 AMF_TAMGPU_DESTEKLENMEYEN = ("renk filtresi", "taraklanma giderme", "altyazı gömme")
 
 # sr_amf = AMD'nin donanimsal HQ buyutmesi (ffmpeg -h filter=sr_amf).
-# Olculdu: 640x480 -> 1280x960 calisiyor.
+#
+# "SR 1.1" (algorithm=4) BILEREK YOK: bu surucude SIMSIYAH kare uretiyor.
+# OLCULDU (RX 9070 XT, ffmpeg 9.0.1) - komut basariyla bitiyor, cikti dogru
+# cozunurlukte ve dogru kare sayisinda, ama goruntu bos:
+#     kaynak                YAVG 125.6
+#     sr_amf algorithm=4    YAVG   0.0   <-- siyah (PSNR 9.6 dB)
+#     sr_amf algorithm=2    YAVG 125.6   dogru
+#     sr_amf algorithm=1/0  YAVG 125.6   dogru
+# Bu yuzden "kostu mu" kontrolu YETMIYOR; goruntunun kendisi olculmeli.
 AMF_SR_ALGORITMALARI = {
-    "SR 1.1 (AMD, en iyi)": "4",
-    "SR 1.0 (AMD)": "2",
+    "SR 1.0 (AMD, önerilen)": "2",
     "Bicubic": "1",
     "Bilinear": "0",
 }
+AMF_SR_VARSAYILAN_ALGO = "2"
 
 # HANGI AMF FILTRELERI BIR ARADA CALISIR - OLCULDU (RX 9070 XT, ffmpeg 9.0.1;
 # her birlesim hevc_amf ve av1_amf ile 3'er kez kosuldu):
@@ -790,7 +798,7 @@ def build_filters(cfg, probes):
         # buradaki kontrol kuyruga eski ayarlarla giren isler icin.
         hq = bool(cfg.get("amf_sr")) and hedef is not None
         if hq:
-            sr = f"sr_amf=w={hedef[0]}:h={hedef[1]}:algorithm={cfg.get('amf_sr_algo', '4')}"
+            sr = f"sr_amf=w={hedef[0]}:h={hedef[1]}:algorithm={cfg.get('amf_sr_algo', AMF_SR_VARSAYILAN_ALGO)}"
             keskinlik = cfg.get("amf_sr_sharpness")
             if keskinlik not in (None, "", -1):
                 sr += f":sharpness={keskinlik}"
@@ -3826,7 +3834,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             "amf_quality": oku("amf_quality", "quality"),
             # TAM GPU sekmesine ozgu (digerlerinde bu degiskenler yok).
             "amf_sr": tab_vars["amf_sr"].get() if "amf_sr" in tab_vars else False,
-            "amf_sr_algo": AMF_SR_ALGORITMALARI.get(oku("amf_sr_algo", ""), "4"),
+            "amf_sr_algo": AMF_SR_ALGORITMALARI.get(oku("amf_sr_algo", ""), AMF_SR_VARSAYILAN_ALGO),
             "amf_frc": tab_vars["amf_frc"].get() if "amf_frc" in tab_vars else False,
             "output_dir": self.output_dir.get().strip(),
             "name_with_cq": self.name_with_cq.get(),
