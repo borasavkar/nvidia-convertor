@@ -425,6 +425,14 @@ AMF_QP_B_KODEKLERI = ("av1_amf", "h264_amf")
 # H.264'te bedava sayilir (%10 yavaslama, %19 kucuk dosya) -> HEP ACIK.
 # AV1'de hizin yarisindan fazlasini goturuyor, kazanc ise kucuk (%5 boyut,
 # 1.15 VMAF) -> KULLANICI SECIMI, varsayilan kapali.
+#
+# SONRADAN OLCULDU - AV1'DE VARSAYILANI ACMAYIN. Yukaridaki "1.15 VMAF
+# kazanc" TEK BIR KLIPTEN geliyordu ve GENELLENEMEZ. Kullanicinin kendi
+# arsivinden 40 sn'lik gercek bir dosyada (852x478) ESIT BOYUTTA olculdu:
+#     AV1   bf=0  0.64 MB -> VMAF 80.12   |  bf=3  0.64 MB -> VMAF 79.17
+#     H264  bf=0  1.12 MB -> VMAF 87.71   |  bf=3  1.12 MB -> VMAF ~88.5
+# Yani AV1'de B-kare bu icerikte KAYBETTIRIYOR, H.264'te kazandiriyor.
+# Icerige gore degistigi icin AV1'de karar kullanicida birakildi.
 AMF_B_KARE = "3"
 AMF_B_KARE_KAPALI = "0"
 
