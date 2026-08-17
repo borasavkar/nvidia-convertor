@@ -401,7 +401,8 @@ def test_amd_tablolari_nvenc_tablosundan_KOPYA_DEGIL():
     assert nv.get_cq_range("hevc_amf", "1080p") != nv.get_cq_range("hevc_nvenc", "1080p")
     assert nv.get_cq_range("h264_amf", "1080p") != nv.get_cq_range("h264_nvenc", "1080p")
     # AV1 zaten farkli olcekte
-    assert nv.get_cq_range("av1_amf", "1080p")[0] > 100
+    # AV1 kendi olceginde (0-255): ust sinir digerlerinin tavanini asar.
+    assert nv.get_cq_range("av1_amf", "1080p")[1] > nv.AMF_QP_TAVANI_VARSAYILAN
 
 
 def test_amf_minimum_kare_uygulama_secenekleriyle_uyumlu():
@@ -646,13 +647,13 @@ def test_orijinal_secilince_band_KAYNAGIN_cozunurlugunden_gelir():
     tavsiye uretiyordu -- av1_amf'te olculen 4K bandi 70-104 iken sekme
     144'te aciliyor ve 144, gercek 4K icerikte VMAF 90'in ALTINA denk geliyor.
     """
-    assert nv.get_cq_range("av1_amf", "Orijinal") == (144, 160)          # kaynak bilinmiyor
+    assert nv.get_cq_range("av1_amf", "Orijinal") == (96, 138)           # kaynak bilinmiyor
     assert nv.get_cq_range("av1_amf", "Orijinal", (3840, 2160)) == (70, 104)
     assert nv.get_cq_default("av1_amf", "Orijinal", (3840, 2160)) == 104
     # Kucuk kaynak da dogru bandi almali (kullanicinin 320x240 dosyasi).
-    assert nv.get_cq_range("av1_amf", "Orijinal", (320, 240)) == (115, 136)
+    assert nv.get_cq_range("av1_amf", "Orijinal", (320, 240)) == (94, 132)
     # Acikca bir olcek secildiyse kaynak boyutu KARISMAZ.
-    assert nv.get_cq_range("av1_amf", "1080p", (3840, 2160)) == (144, 160)
+    assert nv.get_cq_range("av1_amf", "1080p", (3840, 2160)) == (96, 138)
 
 
 def test_cozunurluk_bandi_en_yakin_satiri_secer():

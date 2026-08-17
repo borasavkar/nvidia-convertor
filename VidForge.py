@@ -21,7 +21,7 @@ from collections import deque
 # Zaman damgasi exe'nin kendi dosya tarihinden okunur; boylece surum
 # numarasini artirmayi unutsam bile hangi derlemenin calistigi kesin
 # anlasilir - bu, "yeni exe'yi mi calistiriyorum?" sorusunu bitirir.
-SURUM = "2.1.0"
+SURUM = "2.2.0"
 
 
 def surum_metni():
@@ -265,9 +265,9 @@ CQ_RANGES = {
     # (30, 33) 1080p bir masterin kucultulmesinden TURETILMISTI; gercek 480p
     # kaynaklarda tutmuyor - bkz. av1_amf'teki ayrintili not.
     "hevc_amf": {
-        "4K": (33, 37), "1440p": (32, 36), "1080p": (31, 35), "720p": (31, 34),
-        "480p": (22, 30), "360p": (26, 31), "240p": (28, 31),
-        "default": (31, 35)
+        "4K": (33, 37), "1440p": (32, 36), "1080p": (27, 32), "720p": (29, 33),
+        "480p": (22, 30), "360p": (26, 32), "240p": (26, 31),
+        "default": (27, 32)
     },
     "h264_amf": {
         "4K": (33, 37), "1440p": (32, 36), "1080p": (31, 35), "720p": (30, 34),
@@ -295,30 +295,39 @@ CQ_RANGES = {
     # zor ulasir. Duzeltmek icin HAM (y4m/kayipsiz) bir 4K kaynak gerekir.
     # 1440p icin hicbir olcum YOK; 4K satiri kullaniliyor - kaliteden yana
     # hata yapmak icin (turetilmis yuksek QP degerleri kanitla celisti).
-    # 480p SATIRI GERCEK ICERIKLE YENIDEN OLCULDU (2026-08-16).
+    # TUM SATIRLAR GERCEK ICERIKLE OLCULDU (2026-08-17).
     #
     # Kullanici "480p bir videoda CQ146 secince netlik bozuluyor" dedi ve
-    # HAKLIYDI. Iki ayri gercek 480p kaynakta VMAF 96 ve 90 noktalarina denk
-    # gelen QP ikili aramayla bulundu (kayipsiz referansa karsi):
-    #     480p dosya-1 (852x478): av1 96->QP 61, 90->QP 116 | hevc 22 / 30
-    #     480p dosya-2 (854x480): av1 96->QP 61, 90->QP 109 | hevc 23 / 29
-    # Eski satir (125, 146) ise 146'da VMAF 83.1 veriyordu - yani "bandin
-    # ust ucu VMAF ~90" sozu 480p'de tutmuyordu.
+    # HAKLIYDI: eski satir 146'da VMAF 83.1 veriyordu, oysa tablo "bandin ust
+    # ucu VMAF ~90" diyordu. Bunun uzerine 240p'den 1080p'ye kadar butun
+    # satirlar gercek kaynaklarla yeniden olculdu. Yontem: kayipsiz (ffv1)
+    # referansa karsi VMAF 96 ve 90 noktalarina denk gelen QP, ikili aramayla.
     #
-    # NEDEN: eski 480p/360p satirlari 1080p HAM bir masterin kucultulmesinden
-    # TURETILMISTI. Kucultulmus goruntu temiz ve kolay kodlanir; gercek 480p
-    # kaynaklar ise dusuk bitrate'li, gurultulu ve zor.
+    #                av1_amf            hevc_amf          eski av1 satiri
+    #     240p       94 / 132           26 / 31           115 / 136
+    #     360p       94 / 136           26 / 32           120 / 141
+    #     480p (x2)  61 / 109 ve 116    22-23 / 29-30     125 / 146
+    #     720p      118 / 151           29 / 33           135 / 153
+    #     1080p      96 / 138           27 / 32           144 / 160
     #
-    # 240p ve 720p ayni yontemle olculdu ve mevcut degerler DOGRU cikti,
-    # o yuzden onlara dokunulmadi:
-    #     240p: av1 94/132 (tabloda 115/136)  |  hevc 26/31 (tabloda 28/31)
-    #     720p: av1 118/151 (tabloda 135/153) |  hevc 29/33 (tabloda 31/34)
-    # 360p icin olcum YOK; 240p ile 480p arasina konumlandirildi.
+    # NEDEN ESKI DEGERLER YANLISTI: 480p/360p/240p satirlari 1080p HAM bir
+    # masterin KUCULTULMESINDEN turetilmisti. Kucultulmus goruntu temiz ve
+    # kolay kodlanir; gercek dunyada gelen dosyalar sikistirilmis, gurultulu
+    # ve zordur - ayni QP'de cok daha fazla kaybederler.
+    #
+    # DIKKAT - BU TABLO BIR BASLANGIC NOKTASIDIR: olcumler gerekli QP'nin
+    # cozunurlukten cok KAYNAGIN KENDI KALITESINE bagli oldugunu gosterdi
+    # (480p satiri, kaynaklari daha detayli oldugu icin 240p'den de dusuk
+    # QP istiyor). Cozunurluge gore tablo kacinilmaz olarak kaba bir tahmin;
+    # kullanicinin kadrani elle oynatabilmesi bu yuzden onemli.
+    #
+    # 1440p ve 4K icin gercek kaynak yok; 4K satiri daha once gercek 4K
+    # icerikle olculmustu, 1440p ona esitlendi.
     "av1_amf": {
-        "4K": (70, 104), "1440p": (70, 104), "1080p": (144, 160),
-        "720p": (135, 153), "480p": (61, 110), "360p": (90, 125),
-        "240p": (115, 136),
-        "default": (144, 160)
+        "4K": (70, 104), "1440p": (70, 104), "1080p": (96, 138),
+        "720p": (118, 151), "480p": (61, 110), "360p": (94, 136),
+        "240p": (94, 132),
+        "default": (96, 138)
     },
 }
 
