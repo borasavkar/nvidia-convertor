@@ -457,6 +457,24 @@ DONANIMSIZ_SEKMELER = ("VP9 (Google VOD)", "💬 SADECE ALTYAZI")
 DENEME_BOYUTU = "640x360"
 
 # AMF kalite onayarlari (-quality). NVENC'in p1..p7'sinin karsiligi.
+#
+# OLCULDU (2026-08-17, gercek 480p icerik, AYNI QP'de boyut + VMAF):
+#     AV1 QP110    high_quality 471 KB / 90.65   quality  481 KB / 90.61
+#                  balanced     618 KB / 91.07   speed    629 KB / 90.98
+#     H265 QP30    high_quality 326 KB / 89.83   quality  333 KB / 89.56
+#                  balanced     337 KB / 88.94   speed    326 KB / 88.67
+#
+# Yani "high_quality" ayni QP'de DAHA KUCUK dosya veriyor ve kalite
+# dusmuyor (H.265'te yukseliyor bile). Kullanici bunu "high_quality daha
+# kucuk cikti" diye bildirdi - dogru gozlem, ve iyi bir sey: on ayar
+# kodlayicinin araclarini degistiriyor, daha verimli sikistiriyor.
+# "balanced"/"speed" ise ayni QP'de DAHA BUYUK dosya uretiyor.
+#
+# BEDELI HIZ, ve cozunurlukle buyuyor (4K kaynak, surekli is yuku):
+#     4K -> 4K    quality 1.31x  |  high_quality 0.65x   (2 kat yavas)
+#     4K -> 720p  quality 4.09x  |  high_quality 3.11x   (%30 yavas)
+# Kazanc kucuk (%2 boyut), bedel cozunurluge gore agirlasabiliyor; bu
+# yuzden varsayilan "quality" birakildi, secim kullanicida.
 AMF_QUALITY_VALUES = ["quality", "balanced", "speed", "high_quality"]
 AMF_CODECS = tuple(AMF_SEKME_ADI)
 
