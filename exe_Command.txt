@@ -1,9 +1,19 @@
 # ============================================================
-#  DERLEME KOMUTLARI
+#  VidForge - EXE DERLEME
 # ============================================================
-# Tercih edilen yol: spec dosyasi (ayarlar orada, tek kaynak)
 #
-#   pyinstaller --noconfirm VidForge.spec
+# EN KOLAY YOL: proje klasorundeki  derle.bat  dosyasina cift tiklayin.
+# Yaptigi sey: uygulama acik mi diye bakar, .venv icindeki Python ile
+# PyInstaller'i calistirir ve sonucta yeni exe'nin yolunu + derleme
+# zamanini yazar.
+#
+# DIKKAT: derlemeden once VidForge'u KAPATIN. Program aciksa exe dosyasi
+# kilitlidir ve derleme yarida coker. derle.bat bunu kontrol eder.
+#
+# ------------------------------------------------------------
+# Elle derlemek isterseniz (proje klasorunde):
+#
+#   .venv\Scripts\python.exe -m PyInstaller --noconfirm VidForge.spec
 #
 # VidForge.spec icindeki ONEDIR degiskeni:
 #   True  -> klasor cikti  (TASINABILIR dagitim icin onerilen)
@@ -22,3 +32,9 @@
 #
 # Tek dosya:
 #   pyinstaller --noconfirm --onefile --windowed --icon "icon.ico" --add-data "icon.ico;." --collect-all customtkinter --collect-all tkinterdnd2 VidForge.py
+#
+# ------------------------------------------------------------
+# DERLEDIGINIZ EXE'NIN GUNCEL OLDUGUNU NASIL ANLARSINIZ:
+# Programi acin, pencere basliginda surum ve derleme zamani yazar:
+#   VidForge — Donanimsal Video Donusturucu   v2.2.0 · derleme 17.08.2026 16:14
+# Ayni bilgi log kutusuna da dusulur.
