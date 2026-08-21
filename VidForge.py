@@ -5,11 +5,20 @@ import subprocess
 import threading
 import os
 import sys
-import winsound
+# winsound YALNIZCA Windows'ta var; kosulsuz import edilirse program
+# baska bir isletim sisteminde ACILISTA cokuyor (import satirinda).
+try:
+    import winsound
+except ImportError:            # Windows disi
+    winsound = None
 import time
 import shutil
 import json
 import tempfile
+
+# Alt surecler pencere acmasin. 14 ayri yerde tekrar ediliyordu; tek
+# yerde durunca hem okunakli hem de yeni cagrilarda unutulmuyor.
+PENCERESIZ = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 from collections import deque
 
 # Ayarlar kullanicinin profilinde tutulur; program klasoru salt-okunur olabilir
@@ -21,7 +30,7 @@ from collections import deque
 # Zaman damgasi exe'nin kendi dosya tarihinden okunur; boylece surum
 # numarasini artirmayi unutsam bile hangi derlemenin calistigi kesin
 # anlasilir - bu, "yeni exe'yi mi calistiriyorum?" sorusunu bitirir.
-SURUM = "2.2.0"
+SURUM = "2.2.1"
 
 
 def surum_metni():
@@ -59,6 +68,37 @@ def ayarlari_tasi():
         return True
     except Exception:
         return False
+
+
+def bitis_sesi():
+    """
+    Is bitince kisa bir uyari sesi. Windows disinda SESSIZ gecer.
+
+    Eskiden sabit bir dosya yolu caliniyordu (Windows Media klasorundeki
+    notify.wav). O dosya silinmis kurulumlarda ses hic gelmiyordu;
+    MessageBeep sistemin kendi sesini calar, dosya yoluna bagli degil.
+    """
+    if winsound is None:
+        return
+    try:
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+    except Exception:
+        pass
+
+
+def klasorde_goster(yol):
+    """Ciktinin klasorunu acip dosyayi secer; hata firlatmaz, metin dondurur."""
+    try:
+        tam = os.path.abspath(yol)
+        if os.name == "nt":
+            subprocess.Popen(f'explorer /select,"{tam}"')
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", tam])
+        else:
+            subprocess.Popen(["xdg-open", os.path.dirname(tam)])
+        return None
+    except Exception as e:
+        return str(e)
 
 
 def find_tool(name, tercih_dizin=None):
@@ -147,7 +187,7 @@ def tools_usable(ffmpeg_bin, ffprobe_bin):
             sonuc = subprocess.run(
                 [arac, "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=20,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=PENCERESIZ
             )
             if sonuc.returncode != 0:
                 return False
@@ -174,7 +214,7 @@ def encoder_calisiyor_mu(encoder, ffmpeg_bin=None):
              "-f", "lavfi", "-i", f"testsrc2=s={DENEME_BOYUTU}:r=30:d=0.2",
              "-c:v", encoder, "-f", "null", "-"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            creationflags=PENCERESIZ
         )
         return sonuc.returncode == 0
     except Exception:
@@ -3404,7 +3444,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 sonuc = subprocess.run(
                     cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                     errors="replace", timeout=120,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    creationflags=PENCERESIZ
                 )
                 if sonuc.returncode == 0 and os.path.exists(png):
                     self._thread_safe_log(f"🖼️ Önizleme hazır ({zaman:.1f}. saniye): {png}")
@@ -3644,7 +3684,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                    '-of', 'default=noprint_wrappers=1:nokey=1', filepath]
             result = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=PENCERESIZ
             )
             return [s.strip() for s in result.stdout.splitlines() if s.strip()]
         except Exception:
@@ -3658,7 +3698,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                    '-of', 'default=noprint_wrappers=1:nokey=1', filepath]
             result = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=PENCERESIZ
             )
             vals = [s.strip() for s in result.stdout.splitlines() if s.strip()]
             return vals[0] if vals else ""
@@ -3680,7 +3720,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                    '-of', 'default=noprint_wrappers=1:nokey=1', filepath]
             result = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=PENCERESIZ
             )
             degerler = [s.strip().lower() for s in result.stdout.splitlines() if s.strip()]
             if not degerler:
@@ -3711,7 +3751,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                    '-of', 'default=noprint_wrappers=1:nokey=1', filepath]
             result = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=PENCERESIZ
             )
             vals = [s.strip() for s in result.stdout.splitlines() if s.strip()]
             return vals[0] if vals else ""
@@ -3726,7 +3766,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                    '-of', 'default=noprint_wrappers=1:nokey=1', filepath]
             result = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=PENCERESIZ
             )
             vals = [s.strip() for s in result.stdout.splitlines() if s.strip()]
             return (int(vals[0]), int(vals[1])) if len(vals) >= 2 else (0, 0)
@@ -3746,7 +3786,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                  "-show_entries", "stream=bit_rate",
                  "-of", "default=noprint_wrappers=1:nokey=1", filepath],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=30,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=PENCERESIZ
             )
             ham = (sonuc.stdout or "").strip().splitlines()
             return round(int(ham[0]) / 1000) if ham and ham[0].isdigit() else None
@@ -3768,7 +3808,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         try:
             result = subprocess.run(
                 cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=PENCERESIZ
             )
             return result.returncode == 0
         except Exception:
@@ -3799,7 +3839,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
         try:
             result = subprocess.run(
                 cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=PENCERESIZ
             )
             return result.returncode == 0
         except Exception:
@@ -3823,7 +3863,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
             try:
                 result = subprocess.run(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    creationflags=PENCERESIZ
                 )
                 return [s.strip() for s in result.stdout.splitlines() if s.strip()]
             except Exception:
@@ -4420,7 +4460,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                  "-of", "default=noprint_wrappers=1", kaynak],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30,
                 encoding="utf-8", errors="replace",
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=PENCERESIZ
             )
             return (sonuc.stdout or "").strip() or (sonuc.stderr or "").strip() or "(bos)"
         except Exception as e:
@@ -4601,7 +4641,7 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 universal_newlines=True,
                 encoding='utf-8',
                 errors='replace',
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                creationflags=PENCERESIZ
             )
 
             self._encode_start_time = time.time()
@@ -4676,16 +4716,10 @@ class FFmpegStudioPro(ctk.CTk, _DndBase):
                 # Klasor/ses/dialog yalnizca kuyrugun SON isinde: 10 islik bir
                 # kuyrukta 10 kez explorer acmak kimsenin istedigi sey degil.
                 if son_is:
-                    try:
-                        abs_out_path = os.path.abspath(output_file)
-                        subprocess.Popen(f'explorer /select,"{abs_out_path}"')
-                    except Exception as e:
-                        self._thread_safe_log(f"Klasör açılamadı: {e}")
-
-                    try:
-                        winsound.PlaySound(r"C:\Windows\Media\notify.wav", winsound.SND_FILENAME | winsound.SND_ASYNC)
-                    except Exception:
-                        pass
+                    hata = klasorde_goster(output_file)
+                    if hata:
+                        self._thread_safe_log(f"Klasör açılamadı: {hata}")
+                    bitis_sesi()
 
                     self.after(0, messagebox.showinfo, "Başarılı", f"Arşivleme tamamlandı!\n\nDosya:\n{os.path.basename(output_file)}")
             else:
